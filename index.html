@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>TaskHub - Freelance Platform</title>
+
+    <script src="https://cdn.weglot.com/weglot.min.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        Weglot.initialize({
+          api_key: 'wg_72ea14c3827931e2e6559d9be12a70350',
+          default_language: 'ru',
+          excluded_blocks: [
+            '.wg-notranslate',
+            '[data-wg-notranslate]',
+            '[data-no-translate]',
+            '.chat-message',
+            '.order-title',
+            '.order-description',
+            '.task-title',
+            '.task-description',
+            '.proposal-content',
+            '.profile-bio',
+            '.review-text',
+            '.user-content',
+            '.ugc'
+          ]
+        });
+      });
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
