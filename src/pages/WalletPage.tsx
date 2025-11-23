@@ -20,8 +20,6 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSupabase } from '@/lib/supabaseClient';
 import { useRegion } from '@/contexts/RegionContext';
-import { Browser } from '@capacitor/browser';
-import { Capacitor } from '@capacitor/core';
 
 const pageVariants = {
   initial: { opacity: 0, y: 16 },
@@ -361,11 +359,7 @@ export default function WalletPage() {
       }
 
       if (data.url) {
-        if (Capacitor.isNativePlatform()) {
-          await Browser.open({ url: data.url });
-        } else {
-          window.location.href = data.url;
-        }
+        window.location.href = data.url;
       }
     } catch (error) {
       console.error('Error connecting Stripe:', error);
@@ -505,11 +499,7 @@ export default function WalletPage() {
       }
 
       if (data.url) {
-        if (Capacitor.isNativePlatform()) {
-          await Browser.open({ url: data.url });
-        } else {
-          window.location.href = data.url;
-        }
+        window.location.href = data.url;
       } else {
         throw new Error('URL для оплаты не получен');
       }
