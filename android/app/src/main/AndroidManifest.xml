@@ -33,6 +33,22 @@
                 <data android:scheme="com.taskhub.app" android:host="oauth-callback"/>
             </intent-filter>
 
+            <!-- Payment callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="com.taskhub.app" android:host="payment-callback"/>
+            </intent-filter>
+
+            <!-- Stripe callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="com.taskhub.app" android:host="stripe-callback"/>
+            </intent-filter>
+
             <!-- Deep links https -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>

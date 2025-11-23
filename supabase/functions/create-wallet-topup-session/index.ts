@@ -35,6 +35,7 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const frontendUrl = Deno.env.get("FRONTEND_URL") || "https://rpbdamgcikqdmptficsc.supabase.co";
+    const appScheme = "com.taskhub.app";
 
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
@@ -145,8 +146,8 @@ Deno.serve(async (req: Request) => {
             quantity: 1,
           },
         ],
-        success_url: `${frontendUrl}/#/wallet?deposit=success`,
-        cancel_url: `${frontendUrl}/#/wallet?deposit=cancelled`,
+        success_url: `${appScheme}://payment-callback?type=wallet&status=success`,
+        cancel_url: `${appScheme}://payment-callback?type=wallet&status=cancelled`,
         metadata: {
           user_id: user.id,
           wallet_id: wallet.id,

@@ -19,6 +19,7 @@ Deno.serve(async (req: Request) => {
   try {
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     const frontendUrl = Deno.env.get("FRONTEND_URL") || "http://localhost:5173";
+    const appScheme = "com.taskhub.app";
 
     if (!stripeSecretKey) {
       throw new Error("STRIPE_SECRET_KEY not configured");
@@ -98,8 +99,8 @@ Deno.serve(async (req: Request) => {
 
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
-      refresh_url: `${frontendUrl}/#/wallet?stripe=onboarding_refresh`,
-      return_url: `${frontendUrl}/#/wallet?stripe=onboarding_return`,
+      refresh_url: `${appScheme}://stripe-callback?type=onboarding&status=refresh`,
+      return_url: `${appScheme}://stripe-callback?type=onboarding&status=return`,
       type: "account_onboarding",
     });
 
