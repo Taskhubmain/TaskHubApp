@@ -68,6 +68,11 @@ npx cap open android
    - Пересоберите: `npm run build && npx cap sync android`
    - Перезапустите приложение из Android Studio
 
+4. **Если ошибка "plugin is not implemented on android":**
+   - Проверьте, что в `MainActivity.java` есть метод `getInitialPlugins()`
+   - Убедитесь, что плагин добавлен: `plugins.add(StripePaymentPlugin.class);`
+   - Пересоберите проект в Android Studio (Build → Rebuild Project)
+
 ## Поддержка
 
 Подробная документация:
