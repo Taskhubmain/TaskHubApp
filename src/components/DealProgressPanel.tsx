@@ -3,6 +3,8 @@ import { ChevronDown, ChevronUp, Send, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getSupabase } from '../lib/supabaseClient';
 import { ReviewInChat } from './ReviewInChat';
+import { useRegion } from '../contexts/RegionContext';
+import { getSystemMessage } from '../lib/system-messages';
 
 interface DealProgressPanelProps {
   dealId: string;
@@ -40,9 +42,11 @@ interface Deal {
   status: string;
   submitted_at: string | null;
   chat_id: string | null;
+  order_id: string | null;
 }
 
 export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId, freelancerId }: DealProgressPanelProps) {
+  const { language } = useRegion();
   const [deal, setDeal] = useState<Deal | null>(null);
   const [progressReports, setProgressReports] = useState<ProgressReport[]>([]);
   const [taskItems, setTaskItems] = useState<TaskItem[]>([]);
@@ -56,9 +60,54 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
   const [loading, setLoading] = useState(false);
   const [showAcceptDialog, setShowAcceptDialog] = useState(false);
   const [showReviewForm, setShowReviewForm] = useState(false);
+  const [hasReview, setHasReview] = useState(false);
 
   useEffect(() => {
     loadData();
+
+    // Realtime subscription for deal progress updates
+    const supabase = getSupabase();
+    const channel = supabase
+      .channel(`deal_progress:${dealId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'deals',
+          filter: `id=eq.${dealId}`
+        },
+        (payload) => {
+          if (payload.eventType === 'UPDATE') {
+            const updatedDeal = payload.new as Deal;
+            setDeal(updatedDeal);
+            setNewProgress(updatedDeal.current_progress || 0);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'deal_progress_reports',
+          filter: `deal_id=eq.${dealId}`
+        },
+        (payload) => {
+          // Add new report to the list immediately
+          const newReport = payload.new as ProgressReport;
+          setProgressReports(prev => [...prev, newReport].sort((a, b) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          ));
+          // Auto-expand reports section when new report arrives
+          setReportsExpanded(true);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [dealId]);
 
   const loadData = async () => {
@@ -66,7 +115,7 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
 
     const { data: dealData } = await supabase
       .from('deals')
-      .select('current_progress, last_progress_update, status, submitted_at, chat_id')
+      .select('current_progress, last_progress_update, status, submitted_at, chat_id, order_id')
       .eq('id', dealId)
       .maybeSingle();
 
@@ -74,6 +123,16 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       setDeal(dealData);
       setNewProgress(dealData.current_progress || 0);
     }
+
+    // Check if review already exists for this deal
+    const { data: existingReview } = await supabase
+      .from('reviews')
+      .select('id')
+      .eq('deal_id', dealId)
+      .eq('reviewer_id', userId)
+      .maybeSingle();
+
+    setHasReview(!!existingReview);
 
     const { data: reports } = await supabase
       .from('deal_progress_reports')
@@ -116,13 +175,22 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       return;
     }
 
+    // Update deal progress
+    const updateData: any = {
+      current_progress: newProgress,
+      last_progress_update: new Date().toISOString(),
+      progress_reminder_sent: false
+    };
+
+    // If progress is 100%, automatically submit for review
+    if (newProgress === 100) {
+      updateData.status = 'submitted';
+      updateData.submitted_at = new Date().toISOString();
+    }
+
     const { error: dealError } = await supabase
       .from('deals')
-      .update({
-        current_progress: newProgress,
-        last_progress_update: new Date().toISOString(),
-        progress_reminder_sent: false
-      })
+      .update(updateData)
       .eq('id', dealId);
 
     if (dealError) {
@@ -131,10 +199,43 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       return;
     }
 
+    // Send system message to chat about progress update
+    if (chatId || deal?.chat_id) {
+      const templateKey = newProgress === 100 ? 'progressUpdateWithSubmission' : 'progressUpdate';
+      const messageContent = getSystemMessage(templateKey, {
+        progress: newProgress
+      }, language as 'en' | 'ru');
+
+      // Add comment to message if provided
+      let fullMessage = messageContent;
+      if (newComment.trim()) {
+        fullMessage += '\n\n' + (language === 'ru' ? 'Комментарий: ' : 'Comment: ') + newComment;
+      }
+
+      const { error: messageError } = await supabase
+        .from('messages')
+        .insert({
+          chat_id: chatId || deal?.chat_id,
+          sender_id: userId,
+          text: fullMessage,
+          type: 'system',
+          is_read: false
+        });
+
+      if (messageError) {
+        console.error('Error sending system message:', messageError);
+      }
+    }
+
     setNewComment('');
     await loadData();
     setLoading(false);
-    alert('Отчет успешно сохранен');
+
+    if (newProgress === 100) {
+      alert('Отчет сохранен! Сделка автоматически отправлена на проверку.');
+    } else {
+      alert('Отчет успешно сохранен');
+    }
   };
 
   const handleToggleTask = async (taskId: string, currentStatus: boolean) => {
@@ -146,6 +247,88 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       .eq('id', taskId);
 
     if (!error) {
+      // Recalculate progress based on completed tasks
+      const { data: allTasks } = await supabase
+        .from('deal_task_items')
+        .select('is_completed')
+        .eq('deal_id', dealId);
+
+      if (allTasks && allTasks.length > 0) {
+        const completedCount = allTasks.filter(t => t.is_completed).length;
+        const progressPercentage = Math.round((completedCount / allTasks.length) * 100);
+
+        // Update deal progress
+        const updateData: any = {
+          current_progress: progressPercentage,
+          last_progress_update: new Date().toISOString(),
+          progress_reminder_sent: false
+        };
+
+        // If progress reaches 100%, automatically submit for review
+        if (progressPercentage === 100) {
+          updateData.status = 'submitted';
+          updateData.submitted_at = new Date().toISOString();
+        }
+
+        await supabase
+          .from('deals')
+          .update(updateData)
+          .eq('id', dealId);
+
+        // Send system message about task completion
+        if (chatId || deal?.chat_id) {
+          const { data: taskData } = await supabase
+            .from('deal_task_items')
+            .select('task_name')
+            .eq('id', taskId)
+            .maybeSingle();
+
+          const taskName = taskData?.task_name || 'Задача';
+          const templateKey = !currentStatus ? 'taskCompleted' : 'taskUncompleted';
+          const messageContent = getSystemMessage(templateKey, {
+            taskName,
+            progress: progressPercentage
+          }, language as 'en' | 'ru');
+
+          await supabase
+            .from('messages')
+            .insert({
+              chat_id: chatId || deal?.chat_id,
+              sender_id: userId,
+              text: messageContent,
+              content: JSON.stringify({
+                type: 'task_update',
+                taskId: taskId,
+                taskName: taskName,
+                isCompleted: !currentStatus,
+                progress: progressPercentage,
+                dealId: dealId
+              }),
+              type: 'system',
+              is_read: false
+            });
+
+          // If 100%, add submission message
+          if (progressPercentage === 100) {
+            const submissionMessage = getSystemMessage('allTasksCompleted', {}, language as 'en' | 'ru');
+            await supabase
+              .from('messages')
+              .insert({
+                chat_id: chatId || deal?.chat_id,
+                sender_id: userId,
+                text: submissionMessage,
+                content: JSON.stringify({
+                  type: 'auto_submit',
+                  progress: 100,
+                  dealId: dealId
+                }),
+                type: 'system',
+                is_read: false
+              });
+          }
+        }
+      }
+
       await loadData();
     }
   };
@@ -211,12 +394,13 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       return;
     }
 
+    const submittedMessage = getSystemMessage('workSubmitted', {}, language as 'en' | 'ru');
     const { error: messageError } = await supabase
       .from('messages')
       .insert({
         chat_id: targetChatId,
         sender_id: userId,
-        text: 'Заказ сдан на проверку, если работа выполнена - подтвердите завершение заказа.',
+        text: submittedMessage,
         is_system: true,
         system_type: 'deal_submitted'
       });
@@ -254,6 +438,14 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       return;
     }
 
+    // Если это заказ - меняем его статус на completed (скрывает с биржи)
+    if (deal?.order_id) {
+      await supabase
+        .from('orders')
+        .update({ status: 'completed' })
+        .eq('id', deal.order_id);
+    }
+
     // Освобождаем эскроу и переводим средства исполнителю
     const { data: escrowResult, error: escrowError } = await supabase
       .rpc('release_escrow_to_freelancer', {
@@ -268,12 +460,13 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
       alert(`Работа принята, но перевод средств не выполнен: ${escrowResult.error}`);
     }
 
+    const confirmedMessage = getSystemMessage('workConfirmed', {}, language as 'en' | 'ru');
     const { error: messageError } = await supabase
       .from('messages')
       .insert({
         chat_id: targetChatId,
         sender_id: userId,
-        text: 'Работа подтверждена',
+        text: confirmedMessage,
         is_system: true,
         system_type: 'work_accepted'
       });
@@ -366,7 +559,6 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
             <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
               <motion.div
                 className="bg-gradient-to-r from-[#6FE7C8] to-[#3F7F6E] h-4 rounded-full"
-                initial={{ width: 0 }}
                 animate={{ width: `${deal?.current_progress || 0}%` }}
                 transition={{ duration: 0.8, ease: 'easeOut' }}
               />
@@ -692,21 +884,23 @@ export default function DealProgressPanel({ dealId, userId, isFreelancer, chatId
             </div>
           )}
 
-          {/* Review Form after accepting work */}
-          {showReviewForm && freelancerId && (
-            <div className="p-4">
-              <ReviewInChat
-                dealId={dealId}
-                revieweeId={freelancerId}
-                reviewerId={userId}
-                onSubmitted={() => {
-                  setShowReviewForm(false);
-                  alert('Спасибо за отзыв!');
-                  loadData();
-                }}
-              />
-            </div>
-          )}
+        </div>
+      )}
+
+      {/* Review Form after accepting work - ONLY FOR CLIENT and if review doesn't exist yet */}
+      {!isFreelancer && showReviewForm && freelancerId && !hasReview && (
+        <div className="p-4 border-t border-gray-200 bg-white">
+          <ReviewInChat
+            dealId={dealId}
+            revieweeId={freelancerId}
+            reviewerId={userId}
+            onSubmitted={() => {
+              setShowReviewForm(false);
+              setHasReview(true);
+              alert('Спасибо за отзыв!');
+              loadData();
+            }}
+          />
         </div>
       )}
 

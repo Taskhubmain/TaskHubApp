@@ -156,19 +156,7 @@ export default function TaskCreatePage() {
   const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const supabase = getSupabase();
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('is_muted')
-      .eq('id', user?.id)
-      .single();
-
-    if (profile?.is_muted) {
-      alert('Вы не можете создавать задания, так как ваш аккаунт замьючен');
-      return;
-    }
-
-    if (!isAuthenticated) {
+    if (!isAuthenticated || !user) {
       alert('Войдите в систему для создания объявления');
       window.location.hash = '#/login';
       return;
@@ -183,90 +171,132 @@ export default function TaskCreatePage() {
       return;
     }
 
+    // Сохраняем данные формы ДО асинхронных вызовов
+    const formElement = e.currentTarget;
+    const formData = new FormData(formElement);
+    const currency = String(formData.get('currency'));
+    const deliveryDays = Number(formData.get('delivery_days'));
+
     setLoading(true);
-    const fd = new FormData(e.currentTarget);
 
     try {
-      const moderationResponse = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/moderate-content`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({
-            content: `${title} ${description}`,
-            contentType: 'task',
-          }),
-        }
-      );
+      const supabase = getSupabase();
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('is_muted')
+        .eq('id', user.id)
+        .maybeSingle();
 
-      const moderationResult = await moderationResponse.json();
-
-      if (moderationResult.flagged && moderationResult.action === 'blocked') {
-        alert(moderationResult.message || 'Ваше объявление содержит запрещенный контент');
+      if (profileError) {
+        console.error('[TaskCreate] Profile fetch error:', profileError);
         setLoading(false);
+        alert('Ошибка при проверке профиля');
         return;
       }
 
-      if (moderationResult.flagged && moderationResult.action === 'warning') {
-        const proceed = confirm(`${moderationResult.message || 'Обнаружено потенциально нежелательное содержимое'}\\n\\nПродолжить?`);
-        if (!proceed) {
+      if (profile?.is_muted) {
+        setLoading(false);
+        alert('Вы не можете создавать задания, так как ваш аккаунт замьючен');
+        return;
+      }
+
+      // Moderation check
+      try {
+        const moderationResponse = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/moderate-content`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+            },
+            body: JSON.stringify({
+              content: `${title} ${description}`,
+              contentType: 'task',
+            }),
+          }
+        );
+
+        const moderationResult = await moderationResponse.json();
+
+        if (moderationResult.flagged && moderationResult.action === 'blocked') {
           setLoading(false);
+          alert(moderationResult.message || 'Ваше объявление содержит запрещенный контент');
           return;
         }
+
+        if (moderationResult.flagged && moderationResult.action === 'warning') {
+          const proceed = confirm(`${moderationResult.message || 'Обнаружено потенциально нежелательное содержимое'}\\n\\nПродолжить?`);
+          if (!proceed) {
+            setLoading(false);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('[TaskCreate] Moderation error:', err);
       }
-    } catch (err) {
-      console.error('Moderation error:', err);
-    }
 
-    const tagsArray = tags.split(',').map(t => t.trim()).filter(Boolean).slice(0, 10);
+      const tagsArray = tags.split(',').map(t => t.trim()).filter(Boolean).slice(0, 10);
 
-    const { data: { user: authUser } } = await getSupabase().auth.getUser();
-    if (!authUser) {
-      alert('Ошибка аутентификации');
-      window.location.hash = '#/login';
-      return;
-    }
+      const { data: { user: authUser } } = await getSupabase().auth.getUser();
+      if (!authUser) {
+        setLoading(false);
+        alert('Ошибка аутентификации');
+        window.location.hash = '#/login';
+        return;
+      }
 
-    // Get category and subcategory names
-    const selectedCategory = categories.find(c => c.id === selectedCategoryId);
-    const categoryName = selectedCategory ? selectedCategory.name : '';
+      // Get category and subcategory names
+      const selectedCategory = categories.find(c => c.id === selectedCategoryId);
+      const categoryName = selectedCategory ? selectedCategory.name : '';
 
-    const selectedSubcategory = subcategories.find(sc => sc.id === selectedSubcategoryId);
-    const subcategoryName = selectedSubcategory ? selectedSubcategory.name : null;
+      const selectedSubcategory = subcategories.find(sc => sc.id === selectedSubcategoryId);
+      const subcategoryName = selectedSubcategory ? selectedSubcategory.name : null;
 
-    const { data, error } = await getSupabase()
-      .from('tasks')
-      .insert({
+      console.log('[TaskCreate] Creating task with data:', {
         user_id: authUser.id,
         title,
-        description,
         category: categoryName,
-        subcategory: subcategoryName,
         price: Number(price),
-        currency: String(fd.get('currency')),
-        delivery_days: Number(fd.get('delivery_days')),
-        tags: tagsArray,
-        features: selectedFeatures,
-        status: 'active',
-        is_boosted: useBoost,
-        boost_commission_rate: useBoost ? 25.00 : 0.00
-      })
-      .select()
-      .single();
+        delivery_days: deliveryDays
+      });
 
-    setLoading(false);
+      const { data, error } = await getSupabase()
+        .from('tasks')
+        .insert({
+          user_id: authUser.id,
+          title,
+          description,
+          category: categoryName,
+          subcategory: subcategoryName,
+          price: Number(price),
+          currency,
+          delivery_days: deliveryDays,
+          tags: tagsArray,
+          features: selectedFeatures,
+          status: 'active',
+          is_boosted: useBoost,
+          boost_commission_rate: useBoost ? 25.00 : 0.00
+        })
+        .select()
+        .single();
 
-    if (error) {
-      console.error('Error creating task:', error);
-      alert('Ошибка при создании объявления: ' + error.message);
-      return;
+      setLoading(false);
+
+      if (error) {
+        console.error('[TaskCreate] Error creating task:', error);
+        alert('Ошибка при создании объявления: ' + error.message);
+        return;
+      }
+
+      console.log('[TaskCreate] Task created successfully:', data);
+      alert('Объявление успешно опубликовано!');
+      window.location.hash = '#/market';
+    } catch (error: any) {
+      setLoading(false);
+      console.error('[TaskCreate] Unexpected error:', error);
+      alert('Произошла ошибка: ' + (error.message || 'Попробуйте позже'));
     }
-
-    alert('Объявление успешно опубликовано!');
-    window.location.hash = '#/market';
   };
 
   return (
@@ -284,12 +314,16 @@ export default function TaskCreatePage() {
                     required
                     className="h-11"
                     value={title}
-                    maxLength={50}
+                    minLength={30}
+                    maxLength={70}
                     onChange={(e) => {
                       setTitle(e.target.value);
                       checkContent(`${e.target.value} ${description}`);
                     }}
                   />
+                  <span className={`text-xs mt-1 ${title.length < 30 ? 'text-red-500' : title.length > 70 ? 'text-red-500' : 'text-gray-500'}`}>
+                    От 30 до 70 символов ({title.length}/70)
+                  </span>
                 </Field>
                 <ModerationAlert message={blockMessage} isVisible={isBlocked} />
                 <TwoCol
@@ -392,12 +426,17 @@ export default function TaskCreatePage() {
                     placeholder="Опишите опыт, стек, процесс и критерии качества"
                     className="rounded-md border px-3 py-2 bg-background"
                     value={description}
+                    minLength={200}
                     maxLength={700}
+                    required
                     onChange={(e) => {
                       setDescription(e.target.value);
                       checkContent(`${title} ${e.target.value}`);
                     }}
                   />
+                  <span className={`text-xs mt-1 ${description.length < 200 ? 'text-red-500' : description.length > 700 ? 'text-red-500' : 'text-gray-500'}`}>
+                    От 200 до 700 символов ({description.length}/700)
+                  </span>
                 </Field>
                 <Field label={`Теги (через запятую, макс. 10)`}>
                   <Input
@@ -414,6 +453,7 @@ export default function TaskCreatePage() {
                 {priceError && (
                   <p className="text-sm text-red-500 -mt-2">{priceError}</p>
                 )}
+                <p className="text-xs text-gray-500 -mt-2">Укажите вашу цену за выполнение работы</p>
 
                 <div className={`relative p-4 rounded-lg border-2 transition ${
                   boostedTasksCount >= 3 ? 'bg-gray-100 border-gray-300 opacity-50 cursor-not-allowed' : 'bg-gradient-to-r from-[#6FE7C8]/10 to-[#3F7F6E]/10 border-[#6FE7C8]'

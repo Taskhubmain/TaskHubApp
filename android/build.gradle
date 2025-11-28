@@ -21,8 +21,17 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // Локальный maven репозиторий для папки libs (вместо flatDir)
+        maven {
+            url = uri("$rootDir/libs")
+        }
+        // Если у тебя есть подкреплённые плагины в подпапке, можно добавить и их
+        maven {
+            url = uri("$rootDir/capacitor-cordova-android-plugins/src/main/libs")
+        }
     }
 }
+
 
 task clean(type: Delete) {
     delete rootProject.buildDir

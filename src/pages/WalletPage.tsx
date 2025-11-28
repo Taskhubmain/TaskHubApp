@@ -38,6 +38,7 @@ interface WalletData {
   balance: number;
   pending_balance: number;
   total_earned: number;
+  total_deposited: number;
   total_withdrawn: number;
   currency: string;
 }
@@ -222,14 +223,35 @@ export default function WalletPage() {
     if (!user) return;
 
     try {
-      const { data, error } = await getSupabase()
+      // Load wallet data
+      const { data: walletData, error: walletError } = await getSupabase()
         .from('wallets')
         .select('*')
         .eq('user_id', user.id)
         .maybeSingle();
 
-      if (error) throw error;
-      setWallet(data);
+      if (walletError) throw walletError;
+
+      // Load wallet stats (total_earned from wallet_ledger)
+      const { data: statsData, error: statsError } = await getSupabase()
+        .from('wallet_stats')
+        .select('total_earned, total_deposited, total_withdrawn')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (statsError) {
+        console.error('Error loading wallet stats:', statsError);
+      }
+
+      // Merge wallet data with stats
+      if (walletData) {
+        setWallet({
+          ...walletData,
+          total_earned: statsData?.total_earned || 0,
+          total_deposited: statsData?.total_deposited || 0,
+          total_withdrawn: statsData?.total_withdrawn || walletData.total_withdrawn
+        });
+      }
     } catch (error) {
       console.error('Error loading wallet:', error);
     } finally {
@@ -685,9 +707,9 @@ export default function WalletPage() {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-sm text-[#3F7F6E] mb-1">Всего заработано</div>
+                    <div className="text-sm text-[#3F7F6E] mb-1">Всего введено</div>
                     <div className="text-2xl font-bold text-green-600">
-                      ${wallet.total_earned.toFixed(2)}
+                      ${wallet.total_deposited.toFixed(2)}
                     </div>
                   </div>
                   <div className="h-12 w-12 rounded-full bg-green-100 flex items-center justify-center">
@@ -747,7 +769,7 @@ export default function WalletPage() {
                         onClick={handleConnectStripe}
                         variant="default"
                         size="sm"
-                        className="bg-[#6FE7C8] hover:bg-[#5DD6B7] text-[#3F7F6E] w-full sm:w-auto"
+                        className="bg-[#6FE7C8] hover:bg-[#5DD6B7] text-[#3F7F6E] w-full sm:w-auto sm:px-8"
                       >
                         Продолжить настройку Stripe
                       </Button>

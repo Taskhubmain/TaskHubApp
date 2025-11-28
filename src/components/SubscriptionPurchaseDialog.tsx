@@ -78,44 +78,29 @@ export default function SubscriptionPurchaseDialog({
         return;
       }
 
-      const { error: balanceError } = await supabase
-        .from('profiles')
-        .update({ balance: profile.balance - plan.priceUSD })
-        .eq('id', user.id);
-
-      if (balanceError) throw balanceError;
-
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + plan.days);
-
-      const { error: subError } = await supabase
-        .from('recommendations_subscriptions')
-        .insert({
-          user_id: user.id,
-          plan_type: selectedPlan,
-          expires_at: expiresAt.toISOString(),
-          price_paid: plan.priceUSD,
-          is_active: true,
+      // Use RPC function for atomic subscription purchase
+      const { data: result, error: purchaseError } = await supabase
+        .rpc('purchase_subscription', {
+          p_user_id: user.id,
+          p_plan_type: selectedPlan,
+          p_days: plan.days,
+          p_price: plan.priceUSD,
+          p_plan_name: plan.name,
+          p_currency: 'usd'
         });
 
-      if (subError) throw subError;
+      if (purchaseError) {
+        throw purchaseError;
+      }
 
-      const { error: ledgerError } = await supabase
-        .from('wallet_ledger')
-        .insert({
-          user_id: user.id,
-          kind: 'purchase',
-          status: 'completed',
-          amount_minor: plan.priceUSD * 100,
-          currency: 'USD',
-          metadata: {
-            plan_type: selectedPlan,
-            days: plan.days,
-            description: `Подписка на рекомендации заказов (${plan.name})`
-          },
-        });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Не удалось выполнить покупку');
+      }
 
-      if (ledgerError) throw ledgerError;
+      console.log('[SubscriptionPurchase] Purchase completed successfully');
+
+      // Wait a bit to ensure DB writes are committed
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       onSuccess();
       onClose();

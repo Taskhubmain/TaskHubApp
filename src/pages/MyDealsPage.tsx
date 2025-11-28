@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus,
   Package,
   ListTodo,
-  Eye,
   MessageSquare,
   Edit,
   Trash2,
@@ -14,7 +13,9 @@ import {
   ChevronUp,
   Loader2,
   Briefcase,
-  ExternalLink
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -97,6 +98,8 @@ interface Task {
   };
 }
 
+const ITEMS_PER_PAGE = 10;
+
 export default function MyDealsPage() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('orders');
@@ -113,6 +116,11 @@ export default function MyDealsPage() {
     orderId?: string;
     taskId?: string;
   }>({ open: false });
+  const [currentPage, setCurrentPage] = useState<Record<Tab, number>>({
+    orders: 1,
+    tasks: 1,
+    mywork: 1
+  });
 
   useEffect(() => {
     if (user) {
@@ -121,8 +129,8 @@ export default function MyDealsPage() {
   }, [user]);
 
   useEffect(() => {
-    loadDeals();
-  }, [user, activeTab]);
+    loadAllDeals();
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -191,141 +199,158 @@ export default function MyDealsPage() {
     };
   }, [user]);
 
-  const loadDeals = async () => {
+  const loadAllDeals = async () => {
     setLoading(true);
     try {
+      // Закрываем истекшие заказы перед загрузкой
+      try {
+        await getSupabase().rpc('close_expired_orders');
+      } catch (rpcError) {
+        console.log('[MyDealsPage] close_expired_orders RPC not available:', rpcError);
+      }
+
       const {
         data: { user: authUser }
       } = await getSupabase().auth.getUser();
       if (!authUser) return;
 
-      if (activeTab === 'mywork') {
-        const { data: dealsData } = await getSupabase()
-          .from('deals')
-          .select('*')
-          .or(`freelancer_id.eq.${authUser.id},client_id.eq.${authUser.id}`)
-          .order('created_at', { ascending: false });
+      const supabase = getSupabase();
 
-        const clientIds = Array.from(new Set((dealsData || []).map((d) => d.client_id)));
-        const freelancerIds = Array.from(new Set((dealsData || []).map((d) => d.freelancer_id)));
-        const allUserIds = Array.from(new Set([...clientIds, ...freelancerIds]));
-
-        let profilesMap: any = {};
-        if (allUserIds.length > 0) {
-          const { data: profilesData } = await getSupabase()
-            .from('profiles')
-            .select('id, name, avatar_url, avg_rating, reviews_count, five_star_count, created_at')
-            .in('id', allUserIds);
-          profilesMap = Object.fromEntries((profilesData || []).map((p) => [p.id, p]));
-        }
-
-        setDeals(
-          (dealsData || []).map((d) => ({
-            ...d,
-            client: profilesMap[d.client_id],
-            freelancer: profilesMap[d.freelancer_id],
-            isMyOrder: d.client_id === authUser.id
-          }))
-        );
-      } else {
-        const { data: ordersData } = await getSupabase()
+      const [
+        { data: ordersData },
+        { data: tasksData },
+        { data: dealsData },
+        { data: activeDeals }
+      ] = await Promise.all([
+        supabase
           .from('orders')
           .select('*')
           .eq('user_id', authUser.id)
-          .order('created_at', { ascending: false });
-
-        const { data: tasksData } = await getSupabase()
+          .order('created_at', { ascending: false }),
+        supabase
           .from('tasks')
           .select('*')
           .eq('user_id', authUser.id)
-          .order('created_at', { ascending: false });
-
-        const { data: activeDeals } = await getSupabase()
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('deals')
+          .select('*')
+          .or(`freelancer_id.eq.${authUser.id},client_id.eq.${authUser.id}`)
+          .order('created_at', { ascending: false }),
+        supabase
           .from('deals')
           .select('order_id, task_id, id, status')
-          .neq('status', 'completed');
+          .neq('status', 'completed')
+      ]);
 
-        const ordersDealsMap = Object.fromEntries(
-          (activeDeals || []).filter((d) => d.order_id).map((d) => [d.order_id, d])
-        );
-        const tasksDealsMap = Object.fromEntries(
-          (activeDeals || []).filter((d) => d.task_id).map((d) => [d.task_id, d])
-        );
+      const ordersDealsMap = Object.fromEntries(
+        (activeDeals || []).filter((d) => d.order_id).map((d) => [d.order_id, d])
+      );
+      const tasksDealsMap = Object.fromEntries(
+        (activeDeals || []).filter((d) => d.task_id).map((d) => [d.task_id, d])
+      );
 
-        const enrichedOrders = (ordersData || []).map((o) => ({
-          ...o,
-          hasActiveDeal: !!ordersDealsMap[o.id],
-          activeDeal: ordersDealsMap[o.id]
-        }));
+      const enrichedOrders = (ordersData || []).map((o) => ({
+        ...o,
+        hasActiveDeal: !!ordersDealsMap[o.id],
+        activeDeal: ordersDealsMap[o.id]
+      }));
 
-        const enrichedTasks = (tasksData || []).map((t) => ({
-          ...t,
-          hasActiveDeal: !!tasksDealsMap[t.id],
-          activeDeal: tasksDealsMap[t.id]
-        }));
+      const enrichedTasks = (tasksData || []).map((t) => ({
+        ...t,
+        hasActiveDeal: !!tasksDealsMap[t.id],
+        activeDeal: tasksDealsMap[t.id]
+      }));
 
-        setOrders(enrichedOrders);
-        setTasks(enrichedTasks);
+      setOrders(enrichedOrders);
+      setTasks(enrichedTasks);
 
-        const orderIds = (ordersData || []).map((o) => o.id);
-        const taskIds = (tasksData || []).map((t) => t.id);
-        const allIds = [...orderIds, ...taskIds];
+      const clientIds = Array.from(new Set((dealsData || []).map((d) => d.client_id)));
+      const freelancerIds = Array.from(new Set((dealsData || []).map((d) => d.freelancer_id)));
+      const orderIds = (ordersData || []).map((o) => o.id);
+      const taskIds = (tasksData || []).map((t) => t.id);
 
-        if (allIds.length > 0) {
-          const { data: allProposalsData } = await getSupabase()
-            .from('proposals')
-            .select('*')
-            .or(
-              orderIds.length > 0 && taskIds.length > 0
-                ? `order_id.in.(${orderIds.join(',')}),task_id.in.(${taskIds.join(',')})`
-                : orderIds.length > 0
-                ? `order_id.in.(${orderIds.join(',')})`
-                : `task_id.in.(${taskIds.join(',')})`
-            )
-            .order('created_at', { ascending: false });
+      const allUserIds = Array.from(new Set([...clientIds, ...freelancerIds]));
 
-          if (allProposalsData && allProposalsData.length > 0) {
-            const userIds = Array.from(new Set(allProposalsData.map((p) => p.user_id)));
-            const { data: profilesData } = await getSupabase()
+      const [
+        { data: profilesData },
+        { data: allProposalsData }
+      ] = await Promise.all([
+        allUserIds.length > 0
+          ? supabase
               .from('profiles')
               .select('id, name, avatar_url, avg_rating, reviews_count, five_star_count, created_at')
-              .in('id', userIds);
-
-            const profilesMap = new Map(profilesData?.map((p) => [p.id, p]) || []);
-
-            const proposalsByItem: Record<string, Proposal[]> = {};
-
-            allProposalsData.forEach((p) => {
-              const itemId = p.order_id || p.task_id;
-              if (!proposalsByItem[itemId]) {
-                proposalsByItem[itemId] = [];
-              }
-              proposalsByItem[itemId].push({
-                ...p,
-                profile: profilesMap.get(p.user_id)
-              });
-            });
-
-            setProposals(proposalsByItem);
-
-            const allProposalIds = allProposalsData.map((p) => p.id);
-            const { data: optionsData } = await getSupabase()
-              .from('proposal_options')
+              .in('id', allUserIds)
+          : Promise.resolve({ data: [] }),
+        orderIds.length > 0 || taskIds.length > 0
+          ? supabase
+              .from('proposals')
               .select('*')
-              .in('proposal_id', allProposalIds)
-              .order('order_index', { ascending: true });
+              .or(
+                orderIds.length > 0 && taskIds.length > 0
+                  ? `order_id.in.(${orderIds.join(',')}),task_id.in.(${taskIds.join(',')})`
+                  : orderIds.length > 0
+                  ? `order_id.in.(${orderIds.join(',')})`
+                  : `task_id.in.(${taskIds.join(',')})`
+              )
+              .order('created_at', { ascending: false })
+          : Promise.resolve({ data: [] })
+      ]);
 
-            if (optionsData) {
-              const optionsByProposal: Record<string, any[]> = {};
-              optionsData.forEach((opt) => {
-                if (!optionsByProposal[opt.proposal_id]) {
-                  optionsByProposal[opt.proposal_id] = [];
-                }
-                optionsByProposal[opt.proposal_id].push(opt);
-              });
-              setProposalOptions(optionsByProposal);
-            }
+      const profilesMap = Object.fromEntries((profilesData || []).map((p) => [p.id, p]));
+
+      setDeals(
+        (dealsData || []).map((d) => ({
+          ...d,
+          client: profilesMap[d.client_id],
+          freelancer: profilesMap[d.freelancer_id],
+          isMyOrder: d.client_id === authUser.id
+        }))
+      );
+
+      if (allProposalsData && allProposalsData.length > 0) {
+        const proposalUserIds = Array.from(new Set(allProposalsData.map((p) => p.user_id)));
+
+        const [
+          { data: proposalProfilesData },
+          { data: optionsData }
+        ] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('id, name, avatar_url, avg_rating, reviews_count, five_star_count, created_at')
+            .in('id', proposalUserIds),
+          supabase
+            .from('proposal_options')
+            .select('*')
+            .in('proposal_id', allProposalsData.map((p) => p.id))
+            .order('order_index', { ascending: true })
+        ]);
+
+        const proposalProfilesMap = new Map(proposalProfilesData?.map((p) => [p.id, p]) || []);
+        const proposalsByItem: Record<string, Proposal[]> = {};
+
+        allProposalsData.forEach((p) => {
+          const itemId = p.order_id || p.task_id;
+          if (!proposalsByItem[itemId]) {
+            proposalsByItem[itemId] = [];
           }
+          proposalsByItem[itemId].push({
+            ...p,
+            profile: proposalProfilesMap.get(p.user_id)
+          });
+        });
+
+        setProposals(proposalsByItem);
+
+        if (optionsData) {
+          const optionsByProposal: Record<string, any[]> = {};
+          optionsData.forEach((opt) => {
+            if (!optionsByProposal[opt.proposal_id]) {
+              optionsByProposal[opt.proposal_id] = [];
+            }
+            optionsByProposal[opt.proposal_id].push(opt);
+          });
+          setProposalOptions(optionsByProposal);
         }
       }
     } catch (error) {
@@ -349,14 +374,39 @@ export default function MyDealsPage() {
     type: 'order' | 'task'
   ) => {
     const isPausing = currentStatus === 'open' || currentStatus === 'active';
-
     const newStatus = isPausing ? 'paused' : type === 'order' ? 'open' : 'active';
 
-    const table = type === 'order' ? 'orders' : 'tasks';
-    const { error } = await getSupabase().from(table).update({ status: newStatus }).eq('id', itemId);
+    // Мгновенно обновляем UI
+    if (type === 'order') {
+      setOrders(prev => prev.map(o =>
+        o.id === itemId ? { ...o, status: newStatus } : o
+      ));
+    } else {
+      setTasks(prev => prev.map(t =>
+        t.id === itemId ? { ...t, status: newStatus } : t
+      ));
+    }
 
-    if (!error) {
-      loadDeals();
+    // Обновляем в базе данных
+    const table = type === 'order' ? 'orders' : 'tasks';
+    const { error } = await getSupabase()
+      .from(table)
+      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .eq('id', itemId);
+
+    if (error) {
+      console.error('Error updating status:', error);
+      // Откатываем изменение при ошибке
+      if (type === 'order') {
+        setOrders(prev => prev.map(o =>
+          o.id === itemId ? { ...o, status: currentStatus } : o
+        ));
+      } else {
+        setTasks(prev => prev.map(t =>
+          t.id === itemId ? { ...t, status: currentStatus } : t
+        ));
+      }
+      alert('Ошибка при изменении статуса');
     }
   };
 
@@ -375,7 +425,14 @@ export default function MyDealsPage() {
     const { error } = await getSupabase().from(table).delete().eq('id', itemId);
 
     if (!error) {
-      loadDeals();
+      // Мгновенно обновляем UI
+      if (type === 'order') {
+        setOrders(prev => prev.filter(o => o.id !== itemId));
+      } else {
+        setTasks(prev => prev.filter(t => t.id !== itemId));
+      }
+    } else {
+      alert('Ошибка при удалении');
     }
   };
 
@@ -387,10 +444,96 @@ export default function MyDealsPage() {
       open: { label: 'Открыт', variant: 'default' },
       active: { label: 'Активно', variant: 'default' },
       paused: { label: 'Приостановлено', variant: 'warning' },
-      closed: { label: 'Закрыт', variant: 'outline' }
+      closed: { label: 'Истек срок', variant: 'outline' }
     };
     const config = variants[status] || { label: status, variant: 'outline' };
     return <Badge variant={config.variant}>{config.label}</Badge>;
+  };
+
+  // Пагинация для заказов
+  const paginatedOrders = useMemo(() => {
+    const start = (currentPage.orders - 1) * ITEMS_PER_PAGE;
+    const end = start + ITEMS_PER_PAGE;
+    return orders.slice(start, end);
+  }, [orders, currentPage.orders]);
+
+  const ordersTotalPages = Math.ceil(orders.length / ITEMS_PER_PAGE);
+
+  // Пагинация для задач
+  const paginatedTasks = useMemo(() => {
+    const start = (currentPage.tasks - 1) * ITEMS_PER_PAGE;
+    const end = start + ITEMS_PER_PAGE;
+    return tasks.slice(start, end);
+  }, [tasks, currentPage.tasks]);
+
+  const tasksTotalPages = Math.ceil(tasks.length / ITEMS_PER_PAGE);
+
+  // Пагинация для моей работы
+  const paginatedDeals = useMemo(() => {
+    const start = (currentPage.mywork - 1) * ITEMS_PER_PAGE;
+    const end = start + ITEMS_PER_PAGE;
+    return deals.slice(start, end);
+  }, [deals, currentPage.mywork]);
+
+  const dealsTotalPages = Math.ceil(deals.length / ITEMS_PER_PAGE);
+
+  const handlePageChange = (tab: Tab, page: number) => {
+    setCurrentPage(prev => ({ ...prev, [tab]: page }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const renderPagination = (tab: Tab, totalPages: number) => {
+    if (totalPages <= 1) return null;
+
+    const currentTabPage = currentPage[tab];
+
+    return (
+      <div className="flex justify-center items-center gap-2 mt-6">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => handlePageChange(tab, currentTabPage - 1)}
+          disabled={currentTabPage === 1}
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+
+        <div className="flex gap-1">
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+            // Показываем первую, последнюю, текущую и соседние страницы
+            if (
+              page === 1 ||
+              page === totalPages ||
+              (page >= currentTabPage - 1 && page <= currentTabPage + 1)
+            ) {
+              return (
+                <Button
+                  key={page}
+                  variant={page === currentTabPage ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => handlePageChange(tab, page)}
+                  className="min-w-[40px]"
+                >
+                  {page}
+                </Button>
+              );
+            } else if (page === currentTabPage - 2 || page === currentTabPage + 2) {
+              return <span key={page} className="px-2">...</span>;
+            }
+            return null;
+          })}
+        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => handlePageChange(tab, currentTabPage + 1)}
+          disabled={currentTabPage === totalPages}
+        >
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+      </div>
+    );
   };
 
   return (
@@ -407,7 +550,10 @@ export default function MyDealsPage() {
 
         <div className="flex border-b mb-6 overflow-x-auto scrollbar-hide">
           <button
-            onClick={() => setActiveTab('orders')}
+            onClick={() => {
+              setActiveTab('orders');
+              setCurrentPage(prev => ({ ...prev, orders: 1 }));
+            }}
             className={`relative px-3 xs-375:px-4 sm:px-6 py-3 font-medium transition-colors whitespace-nowrap text-sm sm:text-base ${
               activeTab === 'orders'
                 ? 'text-[#6FE7C8]'
@@ -424,7 +570,10 @@ export default function MyDealsPage() {
             )}
           </button>
           <button
-            onClick={() => setActiveTab('tasks')}
+            onClick={() => {
+              setActiveTab('tasks');
+              setCurrentPage(prev => ({ ...prev, tasks: 1 }));
+            }}
             className={`relative px-3 xs-375:px-4 sm:px-6 py-3 font-medium transition-colors whitespace-nowrap text-sm sm:text-base ${
               activeTab === 'tasks'
                 ? 'text-[#6FE7C8]'
@@ -441,7 +590,10 @@ export default function MyDealsPage() {
             )}
           </button>
           <button
-            onClick={() => setActiveTab('mywork')}
+            onClick={() => {
+              setActiveTab('mywork');
+              setCurrentPage(prev => ({ ...prev, mywork: 1 }));
+            }}
             className={`relative px-3 xs-375:px-4 sm:px-6 py-3 font-medium transition-colors whitespace-nowrap text-sm sm:text-base ${
               activeTab === 'mywork'
                 ? 'text-[#6FE7C8]'
@@ -487,8 +639,9 @@ export default function MyDealsPage() {
                 </CardContent>
               </Card>
             ) : (
-              orders.map((order) => (
-                <Card key={order.id} className="hover:shadow-lg transition-shadow">
+              <>
+                {paginatedOrders.map((order) => (
+                  <Card key={order.id} className="hover:shadow-lg transition-shadow">
                   <CardContent className="p-3 xs-375:p-4 sm:p-6">
                     {/* MOBILE VERSION */}
                     <div className="sm:hidden">
@@ -497,6 +650,7 @@ export default function MyDealsPage() {
                           <a
                             href={`#/order/${order.id}`}
                             className="text-base xs-375:text-lg font-semibold hover:text-[#6FE7C8] transition-colors flex-1 min-w-0"
+                            data-wg-notranslate
                           >
                             {order.title}
                           </a>
@@ -512,7 +666,7 @@ export default function MyDealsPage() {
                           )}
                         </div>
                         <div className="sm:hidden flex gap-2 mt-2">
-                          {!order.hasActiveDeal ? (
+                          {!order.hasActiveDeal && order.status !== 'closed' ? (
                             <>
                               <Button
                                 variant="outline"
@@ -550,15 +704,11 @@ export default function MyDealsPage() {
                           ) : null}
                         </div>
                       </div>
-                      <p className="text-[#3F7F6E] mb-4 line-clamp-2 text-sm xs-375:text-base">
+                      <p className="text-[#3F7F6E] mb-4 line-clamp-2 text-sm xs-375:text-base" data-wg-notranslate>
                         {order.description}
                       </p>
                       <div className="flex flex-col xs-375:flex-row xs-375:justify-between xs-375:items-center gap-2 xs-375:gap-4 text-sm xs-375:text-base mb-3">
                         <div className="flex gap-4 xs-375:gap-5">
-                          <div className="flex items-center gap-1.5 text-[#3F7F6E]">
-                            <Eye className="h-4 w-4 xs-375:h-5 xs-375:w-5" />
-                            <span className="font-medium">{order.views_count || 0}</span>
-                          </div>
                           <div className="flex items-center gap-1.5 text-[#3F7F6E]">
                             <MessageSquare className="h-4 w-4 xs-375:h-5 xs-375:w-5" />
                             <span className="font-medium">
@@ -588,6 +738,7 @@ export default function MyDealsPage() {
                             <a
                               href={`#/order/${order.id}`}
                               className="text-lg font-semibold hover:text-[#6FE7C8] transition-colors truncate"
+                              data-wg-notranslate
                             >
                               {order.title}
                             </a>
@@ -601,16 +752,10 @@ export default function MyDealsPage() {
                               </Badge>
                             )}
                           </div>
-                          <p className="text-[#3F7F6E] text-sm mb-3 line-clamp-2">
+                          <p className="text-[#3F7F6E] text-sm mb-3 line-clamp-2" data-wg-notranslate>
                             {order.description}
                           </p>
                           <div className="flex items-center flex-wrap gap-5 text-sm text-[#3F7F6E]">
-                            <div className="flex items-center gap-1.5">
-                              <Eye className="h-4 w-4" />
-                              <span className="font-medium">
-                                {order.views_count || 0}
-                              </span>
-                            </div>
                             <div className="flex items-center gap-1.5">
                               <MessageSquare className="h-4 w-4" />
                               <span className="font-medium">
@@ -631,7 +776,7 @@ export default function MyDealsPage() {
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                          {!order.hasActiveDeal ? (
+                          {!order.hasActiveDeal && order.status !== 'closed' ? (
                             <>
                               <Button variant="outline" size="sm" asChild>
                                 <a href={`#/order/${order.id}/edit`}>
@@ -707,7 +852,12 @@ export default function MyDealsPage() {
                             </p>
                           ) : (
                             proposals[order.id].map((proposal) => (
-                              <Card key={proposal.id}>
+                              <Card key={proposal.id} className={proposal.status === 'rejected' ? 'relative' : ''}>
+                                {proposal.status === 'rejected' && (
+                                  <div className="absolute top-2 right-2 z-10">
+                                    <Badge variant="destructive" className="text-xs">Отклонено</Badge>
+                                  </div>
+                                )}
                                 <CardContent className="p-3 xs-375:p-4">
                                   <div className="mb-2">
                                     <div className="flex flex-col xs-414:flex-row xs-414:justify-between xs-414:items-start gap-2 mb-2">
@@ -766,15 +916,17 @@ export default function MyDealsPage() {
                                         />
                                       </div>
                                       <div className="flex items-center gap-2 xs-414:flex-col xs-414:items-end">
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          onClick={() =>
-                                            (window.location.hash = '/proposals')
-                                          }
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                        </Button>
+                                        {proposal.status !== 'rejected' && (
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() =>
+                                              (window.location.hash = '/proposals')
+                                            }
+                                          >
+                                            <ExternalLink className="h-3 w-3" />
+                                          </Button>
+                                        )}
                                         <div className="text-xs text-[#3F7F6E] whitespace-nowrap">
                                           {new Date(
                                             proposal.created_at
@@ -841,7 +993,9 @@ export default function MyDealsPage() {
                     </AnimatePresence>
                   </CardContent>
                 </Card>
-              ))
+              ))}
+              {renderPagination('orders', ordersTotalPages)}
+              </>
             )}
           </div>
         ) : activeTab === 'tasks' ? (
@@ -867,8 +1021,9 @@ export default function MyDealsPage() {
                 </CardContent>
               </Card>
             ) : (
-              tasks.map((task) => (
-                <Card key={task.id} className="hover:shadow-lg transition-shadow">
+              <>
+                {paginatedTasks.map((task) => (
+                  <Card key={task.id} className="hover:shadow-lg transition-shadow">
                   <CardContent className="p-3 xs-375:p-4 sm:p-6">
                     {/* MOBILE VERSION */}
                     <div className="sm:hidden">
@@ -877,6 +1032,7 @@ export default function MyDealsPage() {
                           <a
                             href={`#/task/${task.id}`}
                             className="text-base xs-375:text-lg font-semibold hover:text-[#6FE7C8] transition-colors flex-1 min-w-0"
+                            data-wg-notranslate
                           >
                             {task.title}
                           </a>
@@ -891,7 +1047,7 @@ export default function MyDealsPage() {
                           )}
                         </div>
                         <div className="sm:hidden flex gap-2 mt-2">
-                          {!task.hasActiveDeal ? (
+                          {!task.hasActiveDeal && task.status !== 'closed' ? (
                             <>
                               <Button
                                 variant="outline"
@@ -929,15 +1085,11 @@ export default function MyDealsPage() {
                           ) : null}
                         </div>
                       </div>
-                      <p className="text-[#3F7F6E] mb-4 line-clamp-2 text-sm xs-375:text-base">
+                      <p className="text-[#3F7F6E] mb-4 line-clamp-2 text-sm xs-375:text-base" data-wg-notranslate>
                         {task.description}
                       </p>
                       <div className="flex flex-col xs-375:flex-row xs-375:justify-between xs-375:items-center gap-2 xs-375:gap-4 text-sm xs-375:text-base mb-3">
                         <div className="flex gap-4 xs-375:gap-5">
-                          <div className="flex items-center gap-1.5 text-[#3F7F6E]">
-                            <Eye className="h-4 w-4 xs-375:h-5 xs-375:w-5" />
-                            <span className="font-medium">{task.views_count || 0}</span>
-                          </div>
                           <div className="flex items-center gap-1.5 text-[#3F7F6E]">
                             <MessageSquare className="h-4 w-4 xs-375:h-5 xs-375:w-5" />
                             <span className="font-medium">
@@ -965,6 +1117,7 @@ export default function MyDealsPage() {
                             <a
                               href={`#/task/${task.id}`}
                               className="text-lg font-semibold hover:text-[#6FE7C8] transition-colors truncate"
+                              data-wg-notranslate
                             >
                               {task.title}
                             </a>
@@ -978,16 +1131,10 @@ export default function MyDealsPage() {
                               </Badge>
                             )}
                           </div>
-                          <p className="text-[#3F7F6E] text-sm mb-3 line-clamp-2">
+                          <p className="text-[#3F7F6E] text-sm mb-3 line-clamp-2" data-wg-notranslate>
                             {task.description}
                           </p>
                           <div className="flex items-center flex-wrap gap-5 text-sm text-[#3F7F6E]">
-                            <div className="flex items-center gap-1.5">
-                              <Eye className="h-4 w-4" />
-                              <span className="font-medium">
-                                {task.views_count || 0}
-                              </span>
-                            </div>
                             <div className="flex items-center gap-1.5">
                               <MessageSquare className="h-4 w-4" />
                               <span className="font-medium">
@@ -1006,7 +1153,7 @@ export default function MyDealsPage() {
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                          {!task.hasActiveDeal ? (
+                          {!task.hasActiveDeal && task.status !== 'closed' ? (
                             <>
                               <Button variant="outline" size="sm" asChild>
                                 <a href={`#/task/${task.id}/edit`}>
@@ -1082,7 +1229,12 @@ export default function MyDealsPage() {
                             </p>
                           ) : (
                             proposals[task.id].map((proposal) => (
-                              <Card key={proposal.id}>
+                              <Card key={proposal.id} className={proposal.status === 'rejected' ? 'relative' : ''}>
+                                {proposal.status === 'rejected' && (
+                                  <div className="absolute top-2 right-2 z-10">
+                                    <Badge variant="destructive" className="text-xs">Отклонено</Badge>
+                                  </div>
+                                )}
                                 <CardContent className="p-3 xs-375:p-4">
                                   <div className="mb-2">
                                     <div className="flex flex-col xs-414:flex-row xs-414:justify-between xs-414:items-start gap-2 mb-2">
@@ -1141,15 +1293,17 @@ export default function MyDealsPage() {
                                         />
                                       </div>
                                       <div className="flex items-center gap-2 xs-414:flex-col xs-414:items-end">
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          onClick={() =>
-                                            (window.location.hash = '/proposals')
-                                          }
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                        </Button>
+                                        {proposal.status !== 'rejected' && (
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() =>
+                                              (window.location.hash = '/proposals')
+                                            }
+                                          >
+                                            <ExternalLink className="h-3 w-3" />
+                                          </Button>
+                                        )}
                                         <div className="text-xs text-[#3F7F6E] whitespace-nowrap">
                                           {new Date(
                                             proposal.created_at
@@ -1216,7 +1370,9 @@ export default function MyDealsPage() {
                     </AnimatePresence>
                   </CardContent>
                 </Card>
-              ))
+              ))}
+              {renderPagination('tasks', tasksTotalPages)}
+              </>
             )}
           </div>
         ) : activeTab === 'mywork' ? (
@@ -1231,11 +1387,12 @@ export default function MyDealsPage() {
                 </CardContent>
               </Card>
             ) : (
-              deals.map((deal) => (
-                <Card
-                  key={deal.id}
-                  className="hover:shadow-lg transition-shadow relative overflow-hidden"
-                >
+              <>
+                {paginatedDeals.map((deal) => (
+                  <Card
+                    key={deal.id}
+                    className="hover:shadow-lg transition-shadow relative overflow-hidden"
+                  >
                   {deal.isMyOrder && (
                     <div
                       className="absolute top-0 right-0 bg-gradient-to-l from-[#6FE7C8] to-[#4ECDB0] text-white px-4 xs-375:px-6 py-1 text-[10px] xs-375:text-xs font-semibold shadow-md"
@@ -1389,7 +1546,9 @@ export default function MyDealsPage() {
                     </div>
                   </CardContent>
                 </Card>
-              ))
+              ))}
+              {renderPagination('mywork', dealsTotalPages)}
+              </>
             )}
           </div>
         ) : null}

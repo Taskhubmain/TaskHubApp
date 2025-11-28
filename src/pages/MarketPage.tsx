@@ -127,8 +127,12 @@ export default function MarketPage() {
     setLoading(true);
 
     try {
-      // Close expired orders first
-      await getSupabase().rpc('close_expired_orders');
+      // Close expired orders first (ignore errors if function doesn't exist)
+      try {
+        await getSupabase().rpc('close_expired_orders');
+      } catch (rpcError) {
+        console.log('[MarketPage] close_expired_orders RPC not available:', rpcError);
+      }
 
       let ordersQuery = getSupabase()
         .from('orders')
@@ -471,7 +475,7 @@ export default function MarketPage() {
                       <BoostBadge isBoosted className="absolute top-3 right-3 z-10" />
                     )}
                     <CardHeader className="pb-3">
-                      <CardTitle className="text-base leading-6 pr-32 order-title" data-wg-notranslate>{item.title}</CardTitle>
+                      <CardTitle className="text-base leading-6 pr-40 order-title" data-wg-notranslate>{item.title}</CardTitle>
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         <Badge variant="secondary">{item.category}</Badge>
                         {item.subcategory && <Badge variant="outline">{item.subcategory}</Badge>}
@@ -484,12 +488,12 @@ export default function MarketPage() {
                       </div>
                     </CardHeader>
                     <CardContent className="flex-1 px-6">
-                      <div className="flex flex-wrap gap-2 mb-3">
+                      <div className="flex flex-wrap gap-2 mb-4">
                         {(item.tags || []).map((t: string) => (
                           <Badge key={t} variant="outline" className="text-xs">{t}</Badge>
                         ))}
                       </div>
-                      <div className="text-sm text-[#3F7F6E] line-clamp-2 order-description" data-wg-notranslate>{item.description}</div>
+                      <div className="text-sm text-[#3F7F6E] line-clamp-2 order-description mb-4" data-wg-notranslate>{item.description}</div>
                     </CardContent>
                     <div className="flex flex-col xs-414:flex-row items-start xs-414:items-center justify-between gap-3 xs-414:gap-0 px-6 py-4 border-t">
                       <div

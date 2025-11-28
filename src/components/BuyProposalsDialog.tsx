@@ -117,33 +117,22 @@ export default function BuyProposalsDialog({
         return;
       }
 
-      const newBalance = currentBalance - pkg.priceUSD;
-      const newPurchased = currentPurchased + pkg.amount;
+      // Use RPC function for atomic purchase
+      const { data: result, error: purchaseError } = await supabase
+        .rpc('purchase_proposals', {
+          p_user_id: user.id,
+          p_amount: pkg.amount,
+          p_price: pkg.priceUSD,
+          p_currency: userCurrency.toLowerCase()
+        });
 
-      // Update profile
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          balance: newBalance,
-          purchased_proposals: newPurchased,
-        })
-        .eq('id', user.id);
-
-      if (updateError) {
-        throw updateError;
+      if (purchaseError) {
+        throw purchaseError;
       }
 
-      // Create wallet transaction
-      await supabase
-        .from('wallet_ledger')
-        .insert({
-          user_id: user.id,
-          amount: -pkg.priceUSD,
-          balance_after: newBalance,
-          type: 'purchase',
-          description: `Покупка ${pkg.amount} откликов`,
-          currency: userCurrency,
-        });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Не удалось выполнить покупку');
+      }
 
       onSuccess();
       onClose();

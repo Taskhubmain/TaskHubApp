@@ -43,7 +43,7 @@ export default function AdminLayout({ children, currentPage }: AdminLayoutProps)
 
   const handleSignOut = async () => {
     await logout();
-    window.location.hash = '#/admin/login';
+    // logout() already handles redirect and reload
   };
 
   const navigation = [
@@ -112,9 +112,31 @@ export default function AdminLayout({ children, currentPage }: AdminLayoutProps)
                   </a>
                 );
               })}
+
+              {/* Плашка администратора и кнопка выхода для мобильных - сразу после навигации */}
+              <div className="lg:hidden mt-4 pt-4 border-t border-gray-200">
+                {profile && (
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                    <p className="font-medium text-gray-900 text-sm">{profile.name}</p>
+                    <p className="text-xs text-gray-500">{profile.email}</p>
+                    <span className="inline-block mt-2 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-800">
+                      Администратор
+                    </span>
+                  </div>
+                )}
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleSignOut}
+                >
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Выйти
+                </Button>
+              </div>
             </nav>
 
-            <div className="p-3 xs-375:p-4 border-t border-gray-200">
+            {/* Плашка администратора и кнопка выхода для десктопа - внизу */}
+            <div className="hidden lg:block p-3 xs-375:p-4 border-t border-gray-200">
               {profile && (
                 <div className="mb-4 p-3 bg-gray-50 rounded-lg">
                   <p className="font-medium text-gray-900 text-sm">{profile.name}</p>

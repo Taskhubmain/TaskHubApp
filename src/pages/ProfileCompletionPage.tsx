@@ -3,11 +3,13 @@ import { Camera, Upload, X } from 'lucide-react';
 import { getSupabase } from '../lib/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { MediaEditor } from '../components/MediaEditor';
+import { useWeglot } from '../hooks/useWeglot';
 
 const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect width="200" height="200" fill="%236FE7C8"/%3E%3Ctext x="100" y="140" font-family="Arial,sans-serif" font-size="120" font-weight="bold" fill="%233F7F6E" text-anchor="middle"%3ET%3C/text%3E%3C/svg%3E';
 
 export default function ProfileCompletionPage() {
   const { user } = useAuth();
+  const { t } = useWeglot();
   const [loading, setLoading] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string>(DEFAULT_AVATAR);
@@ -53,18 +55,30 @@ export default function ProfileCompletionPage() {
           setAvatarPreview(profile.avatar_url);
         }
 
+        // Helper function to filter out placeholder values
+        const cleanValue = (value: string | null | undefined) => {
+          if (!value) return '';
+          // Remove common placeholder values in different languages
+          const placeholders = [
+            'не указано', 'не указана', 'не указан', 'не указаны',
+            'not specified', 'n/a', 'N/A'
+          ];
+          const normalized = value.trim().toLowerCase();
+          return placeholders.some(p => normalized === p.toLowerCase()) ? '' : value;
+        };
+
         setFormData({
-          specialty: profile.specialty || '',
+          specialty: cleanValue(profile.specialty),
           experience_years: profile.experience_years?.toString() || '',
           age: profile.age?.toString() || '',
           rate_min: profile.rate_min?.toString() || '',
           rate_max: profile.rate_max?.toString() || '',
           currency: profile.currency || 'USD',
           skills: profile.skills || [],
-          location: profile.location || '',
-          contact_telegram: profile.contact_telegram || '',
-          contact_gmail: profile.contact_gmail || '',
-          bio: profile.bio || '',
+          location: cleanValue(profile.location),
+          contact_telegram: cleanValue(profile.contact_telegram),
+          contact_gmail: cleanValue(profile.contact_gmail),
+          bio: cleanValue(profile.bio),
         });
       }
     };
@@ -152,35 +166,44 @@ export default function ProfileCompletionPage() {
       }
 
       const updateData: any = {
-        specialty: formData.specialty || 'не указана',
+        specialty: formData.specialty || null,
         experience_years: parseInt(formData.experience_years) || 0,
         age: parseInt(formData.age) || null,
         rate_min: parseInt(formData.rate_min) || 0,
         rate_max: parseInt(formData.rate_max) || 0,
         currency: formData.currency,
-        skills: formData.skills.length > 0 ? formData.skills : ['не указаны'],
-        location: formData.location || 'не указана',
-        contact_telegram: formData.contact_telegram || 'не указан',
-        contact_gmail: formData.contact_gmail || 'не указан',
-        bio: formData.bio || 'Привет! Я использую TaskHub',
+        skills: formData.skills.length > 0 ? formData.skills : [],
+        location: formData.location || null,
+        contact_telegram: formData.contact_telegram || null,
+        contact_gmail: formData.contact_gmail || null,
+        bio: formData.bio || null,
         profile_completed: true,
+        updated_at: new Date().toISOString(),
       };
 
       if (avatarUrl) {
         updateData.avatar_url = avatarUrl;
       }
 
-      const { error } = await supabase
+      console.log('[ProfileCompletion] Updating profile with data:', updateData);
+
+      const { error, data: updatedProfile } = await supabase
         .from('profiles')
         .update(updateData)
-        .eq('id', user.id);
+        .eq('id', user.id)
+        .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[ProfileCompletion] Update error:', error);
+        throw error;
+      }
 
+      console.log('[ProfileCompletion] Profile updated successfully:', updatedProfile);
+      alert('Профиль успешно обновлён!');
       window.location.hash = '/me';
-    } catch (error) {
-      console.error('Error completing profile:', error);
-      alert('Ошибка при сохранении профиля');
+    } catch (error: any) {
+      console.error('[ProfileCompletion] Error completing profile:', error);
+      alert('Ошибка при сохранении профиля: ' + (error.message || 'Неизвестная ошибка'));
     } finally {
       setLoading(false);
     }
@@ -192,10 +215,10 @@ export default function ProfileCompletionPage() {
         <div className="bg-white rounded-2xl shadow-xl p-8">
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">
-              Завершите настройку профиля
+              {t('profileCompletion.title')}
             </h1>
             <p className="text-gray-600">
-              Расскажите о себе, чтобы клиенты могли найти вас
+              {t('profileCompletion.subtitle')}
             </p>
           </div>
 
@@ -224,13 +247,13 @@ export default function ProfileCompletionPage() {
                   />
                 </label>
               </div>
-              <p className="mt-2 text-sm text-gray-500">Загрузите фото профиля</p>
+              <p className="mt-2 text-sm text-gray-500">{t('profileCompletion.uploadPhoto')}</p>
             </div>
 
             {/* Specialty */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Специальность *
+                {t('profileCompletion.specialty')} *
               </label>
               <input
                 type="text"
@@ -239,7 +262,7 @@ export default function ProfileCompletionPage() {
                 onChange={(e) =>
                   setFormData({ ...formData, specialty: e.target.value })
                 }
-                placeholder="Например: Full-stack разработчик, UI/UX дизайнер"
+                placeholder={t('profileCompletion.specialtyPlaceholder')}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
               />
             </div>
@@ -248,7 +271,7 @@ export default function ProfileCompletionPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Опыт работы (лет) *
+                  {t('profileCompletion.experience')} *
                 </label>
                 <input
                   type="number"
@@ -260,7 +283,7 @@ export default function ProfileCompletionPage() {
                     const value = e.target.value;
                     setFormData({ ...formData, experience_years: value });
                     if (parseInt(value) > 40) {
-                      setExperienceError('Установите корректный опыт работы');
+                      setExperienceError(t('profileCompletion.experienceError'));
                     } else {
                       setExperienceError('');
                     }
@@ -273,12 +296,12 @@ export default function ProfileCompletionPage() {
                 {experienceError ? (
                   <p className="mt-1 text-xs text-red-600">{experienceError}</p>
                 ) : (
-                  <p className="mt-1 text-xs text-gray-500">Максимум 40 лет</p>
+                  <p className="mt-1 text-xs text-gray-500">{t('profileCompletion.experienceMax')}</p>
                 )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Возраст
+                  {t('profileCompletion.age')}
                 </label>
                 <input
                   type="number"
@@ -289,12 +312,12 @@ export default function ProfileCompletionPage() {
                     const value = e.target.value;
                     setFormData({ ...formData, age: value });
                     if (parseInt(value) > 80) {
-                      setAgeError('Установите корректный возраст');
+                      setAgeError(t('profileCompletion.ageError'));
                     } else {
                       setAgeError('');
                     }
                   }}
-                  placeholder="Не указано"
+                  placeholder={t('profileCompletion.notSpecified')}
                   className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent ${
                     ageError ? 'border-red-500' : 'border-gray-300'
                   }`}
@@ -306,7 +329,7 @@ export default function ProfileCompletionPage() {
             {/* Rates */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Стоимость работ *
+                {t('profileCompletion.rates')} *
               </label>
               <div className="grid grid-cols-3 gap-4">
                 <input
@@ -318,7 +341,7 @@ export default function ProfileCompletionPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, rate_min: e.target.value })
                   }
-                  placeholder="Мин."
+                  placeholder={t('profileCompletion.min')}
                   className="px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
                 />
                 <input
@@ -330,7 +353,7 @@ export default function ProfileCompletionPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, rate_max: e.target.value })
                   }
-                  placeholder="Макс."
+                  placeholder={t('profileCompletion.max')}
                   className="px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
                 />
                 <select
@@ -351,7 +374,7 @@ export default function ProfileCompletionPage() {
             {/* Skills */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Навыки и технологии *
+                {t('profileCompletion.skills')} *
               </label>
               <div className="flex gap-2 mb-3">
                 <input
@@ -359,7 +382,7 @@ export default function ProfileCompletionPage() {
                   value={skillInput}
                   onChange={(e) => setSkillInput(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddSkill())}
-                  placeholder="Добавьте навык"
+                  placeholder={t('profileCompletion.addSkill')}
                   className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
                 />
                 <button
@@ -368,7 +391,7 @@ export default function ProfileCompletionPage() {
                   disabled={formData.skills.length >= 10}
                   className="px-6 py-3 bg-[#3F7F6E] text-white rounded-lg hover:bg-[#2F6F5E] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <span className="hidden sm:inline">Добавить</span>
+                  <span className="hidden sm:inline">{t('profileCompletion.addButton')}</span>
                   <span className="sm:hidden">+</span>
                 </button>
               </div>
@@ -391,12 +414,12 @@ export default function ProfileCompletionPage() {
               </div>
               {formData.skills.length === 0 && (
                 <p className="text-sm text-gray-500 mt-2">
-                  Добавьте хотя бы один навык
+                  {t('profileCompletion.addSkillHint')}
                 </p>
               )}
               {formData.skills.length > 0 && (
                 <p className="text-sm text-gray-500 mt-2">
-                  {formData.skills.length} / 10 навыков
+                  {formData.skills.length} / 10 {t('profileCompletion.skillsCount')}
                 </p>
               )}
             </div>
@@ -404,7 +427,7 @@ export default function ProfileCompletionPage() {
             {/* About Description */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                О себе (до 700 символов)
+                {t('profileCompletion.about')}
               </label>
               <textarea
                 value={formData.bio}
@@ -413,7 +436,7 @@ export default function ProfileCompletionPage() {
                 }
                 rows={6}
                 maxLength={700}
-                placeholder="Расскажите о своём опыте, навыках и интересах..."
+                placeholder={t('profileCompletion.aboutPlaceholder')}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent resize-none"
               />
               <div className="text-xs text-gray-500 text-right mt-1">
@@ -424,13 +447,13 @@ export default function ProfileCompletionPage() {
             {/* Contact Information */}
             <div className="border-t pt-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                Контактная информация
+                {t('profileCompletion.contactInfo')}
               </h3>
 
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Локация
+                    {t('profileCompletion.location')}
                   </label>
                   <input
                     type="text"
@@ -438,14 +461,14 @@ export default function ProfileCompletionPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, location: e.target.value })
                     }
-                    placeholder="Город, страна"
+                    placeholder={t('profileCompletion.locationPlaceholder')}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Telegram
+                    {t('profileCompletion.telegram')}
                   </label>
                   <input
                     type="text"
@@ -453,14 +476,14 @@ export default function ProfileCompletionPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, contact_telegram: e.target.value })
                     }
-                    placeholder="@username"
+                    placeholder={t('profileCompletion.telegramPlaceholder')}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Gmail
+                    {t('profileCompletion.gmail')}
                   </label>
                   <input
                     type="email"
@@ -468,7 +491,7 @@ export default function ProfileCompletionPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, contact_gmail: e.target.value })
                     }
-                    placeholder="example@gmail.com"
+                    placeholder={t('profileCompletion.gmailPlaceholder')}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#3F7F6E] focus:border-transparent"
                   />
                 </div>
@@ -482,7 +505,7 @@ export default function ProfileCompletionPage() {
                 disabled={loading || formData.skills.length === 0 || !!ageError || !!experienceError}
                 className="w-full py-4 bg-[#3F7F6E] text-white rounded-lg font-semibold hover:bg-[#2F6F5E] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {loading ? 'Сохранение...' : 'Завершить настройку профиля'}
+                {loading ? t('profileCompletion.saving') : t('profileCompletion.submit')}
               </button>
             </div>
           </form>

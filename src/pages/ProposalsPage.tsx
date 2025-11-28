@@ -11,6 +11,8 @@ import { getSupabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/contexts/AuthContext';
 import { navigateToProfile } from '@/lib/navigation';
 import { optimizeImage } from '@/lib/image-optimization';
+import { useRegion } from '@/contexts/RegionContext';
+import { getSystemMessage, getItemType, formatSystemDate } from '@/lib/system-messages';
 
 const pageVariants = {
   initial: { opacity: 0, y: 16 },
@@ -22,6 +24,7 @@ const pageTransition = { type: 'spring' as const, stiffness: 140, damping: 20, m
 
 export default function ProposalsPage() {
   const { user } = useAuth();
+  const { language } = useRegion();
   const [activeTab, setActiveTab] = useState<'sent' | 'received'>('sent');
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedProposal, setSelectedProposal] = useState<any>(null);
@@ -109,6 +112,8 @@ export default function ProposalsPage() {
             }
           } else if (payload.eventType === 'UPDATE') {
             const updatedProposal = payload.new as any;
+
+            // Keep accepted proposals visible with updated badge
             setSentProposals(prev => prev.map(p => p.id === updatedProposal.id ? updatedProposal : p));
             setReceivedProposals(prev => prev.map(p => p.id === updatedProposal.id ? updatedProposal : p));
           } else if (payload.eventType === 'DELETE') {
@@ -137,7 +142,7 @@ export default function ProposalsPage() {
         .from('proposals')
         .select('*')
         .eq('user_id', user.id)
-        .in('status', ['pending', 'withdrawn'])
+        .in('status', ['pending', 'withdrawn', 'rejected', 'accepted'])
         .order('created_at', { ascending: false });
 
       const orderIds = await getUserOrderIds();
@@ -154,7 +159,7 @@ export default function ProposalsPage() {
           .from('proposals')
           .select('*')
           .or(conditions.join(','))
-          .eq('status', 'pending')
+          .in('status', ['pending', 'rejected', 'accepted'])
           .order('created_at', { ascending: false });
 
         received = receivedData || [];
@@ -381,7 +386,8 @@ export default function ProposalsPage() {
         price: proposal.price,
         currency: proposal.currency,
         delivery_days: proposal.delivery_days,
-        status: 'in_progress'
+        status: 'in_progress',
+        is_boosted: item.is_boosted || false
       };
 
       const { data: createdDeal, error: dealError } = await supabase
@@ -424,10 +430,18 @@ export default function ProposalsPage() {
 
       const clientName = clientProfile?.name || 'Пользователь';
       const freelancerName = freelancerProfile?.name || 'Пользователь';
-      const acceptedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
-      const itemType = proposal.order_id ? 'Заказ' : 'Объявление';
+      const acceptedDate = formatSystemDate(new Date(), language as 'en' | 'ru');
+      const itemType = getItemType(!!proposal.order_id, language as 'en' | 'ru');
 
-      const systemMessage = `${itemType} "${item.title}" был принят ${acceptedDate} за ${proposal.price} ${proposal.currency}, заказчик - ${clientName}, исполнитель - ${freelancerName}.\nУдачной сделки!`;
+      const systemMessage = getSystemMessage('dealAccepted', {
+        itemType,
+        title: item.title,
+        date: acceptedDate,
+        price: proposal.price,
+        currency: proposal.currency,
+        clientName,
+        freelancerName
+      }, language as 'en' | 'ru');
 
       const { error: messageError } = await supabase
         .from('messages')
@@ -450,6 +464,19 @@ export default function ProposalsPage() {
       if (proposalError) {
         console.error('Proposal update error:', proposalError);
         throw proposalError;
+      }
+
+      // Для заказов: меняем статус на 'in_progress' (скрывает с биржи)
+      // Для объявлений: статус не меняем (остаются доступными на бирже)
+      if (proposal.order_id) {
+        const { error: orderUpdateError } = await supabase
+          .from('orders')
+          .update({ status: 'in_progress' })
+          .eq('id', proposal.order_id);
+
+        if (orderUpdateError) {
+          console.error('Order status update error:', orderUpdateError);
+        }
       }
 
       // Убираем отклик из списка немедленно
@@ -479,8 +506,10 @@ export default function ProposalsPage() {
 
       if (error) throw error;
 
+      setReceivedProposals(prev => prev.map(p => p.id === proposalId ? { ...p, status: 'rejected' } : p));
+      setSentProposals(prev => prev.map(p => p.id === proposalId ? { ...p, status: 'rejected' } : p));
+
       alert('Отклик отклонён');
-      loadProposals();
       setDetailsOpen(false);
     } catch (error) {
       console.error('Error rejecting proposal:', error);
@@ -539,7 +568,8 @@ export default function ProposalsPage() {
 
   const proposals = activeTab === 'sent' ? sentProposals : receivedProposals;
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, isDealInProgress: boolean = false) => {
+    if (status === 'accepted' && isDealInProgress) return <Badge className="bg-blue-100 text-blue-800">Принято в работу</Badge>;
     if (status === 'accepted') return <Badge className="bg-green-100 text-green-800">Принят</Badge>;
     if (status === 'rejected') return <Badge variant="destructive">Отклонён</Badge>;
     if (status === 'withdrawn') return <Badge className="bg-orange-100 text-orange-800">Отозван</Badge>;
@@ -707,59 +737,67 @@ export default function ProposalsPage() {
                     <div className="border-t"></div>
 
                     {/* Кнопки действий */}
-                    <div className="flex flex-col gap-2">
-                      {/* Первая строка: Статус и Принять */}
+                    {proposal.status === 'rejected' ? (
                       <div className="flex items-center gap-2">
-                        {getStatusBadge(proposal.status)}
-                        {activeTab === 'received' && proposal.status === 'pending' && (
-                          <Button
-                            size="sm"
-                            onClick={() => handleAccept(proposal)}
-                            className="px-3 xs-375:px-4"
-                            disabled={acceptingProposal === proposal.id}
-                          >
-                            {acceptingProposal === proposal.id ? (
-                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                            ) : (
-                              <CheckCircle className="h-4 w-4 mr-1" />
-                            )}
-                            {acceptingProposal === proposal.id ? 'Принимаю...' : 'Принять'}
-                          </Button>
+                        {getStatusBadge(proposal.status, false)}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {/* Первая строка: Статус и Принять */}
+                        <div className="flex items-center gap-2">
+                          {getStatusBadge(proposal.status, proposal.status === 'accepted')}
+                          {activeTab === 'received' && proposal.status === 'pending' && (
+                            <Button
+                              size="sm"
+                              onClick={() => handleAccept(proposal)}
+                              className="px-3 xs-375:px-4"
+                              disabled={acceptingProposal === proposal.id}
+                            >
+                              {acceptingProposal === proposal.id ? (
+                                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                              ) : (
+                                <CheckCircle className="h-4 w-4 mr-1" />
+                              )}
+                              {acceptingProposal === proposal.id ? 'Принимаю...' : 'Принять'}
+                            </Button>
+                          )}
+                        </div>
+
+                        {/* Вторая строка: Отклонить и Подробнее - скрыты для принятых откликов */}
+                        {proposal.status === 'accepted' ? null : (
+                          activeTab === 'received' && proposal.status === 'pending' ? (
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleReject(proposal.id)}
+                                disabled={acceptingProposal === proposal.id}
+                                className="px-3 xs-375:px-4"
+                              >
+                                <X className="h-4 w-4 mr-1" />
+                                Отклонить
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => showDetails(proposal)}
+                              >
+                                Подробнее
+                              </Button>
+                            </div>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => showDetails(proposal)}
+                              className="w-full"
+                            >
+                              Подробнее
+                            </Button>
+                          )
                         )}
                       </div>
-
-                      {/* Вторая строка: Отклонить и Подробнее */}
-                      {activeTab === 'received' && proposal.status === 'pending' ? (
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleReject(proposal.id)}
-                            disabled={acceptingProposal === proposal.id}
-                            className="px-3 xs-375:px-4"
-                          >
-                            <X className="h-4 w-4 mr-1" />
-                            Отклонить
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => showDetails(proposal)}
-                          >
-                            Подробнее
-                          </Button>
-                        </div>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => showDetails(proposal)}
-                          className="w-full"
-                        >
-                          Подробнее
-                        </Button>
-                      )}
-                    </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -776,7 +814,7 @@ export default function ProposalsPage() {
                 <DialogTitle>
                   Детали отклика
                 </DialogTitle>
-                <DialogDescription>
+                <DialogDescription data-wg-notranslate>
                   {getProposalTitle(selectedProposal)}
                 </DialogDescription>
               </DialogHeader>
@@ -850,47 +888,51 @@ export default function ProposalsPage() {
                   </div>
                   <div>
                     <span className="text-[#3F7F6E]">Статус: </span>
-                    {getStatusBadge(selectedProposal.status)}
+                    {getStatusBadge(selectedProposal.status, selectedProposal.status === 'accepted')}
                   </div>
                 </div>
               </div>
               <DialogFooter className="gap-2">
                 <Button variant="ghost" onClick={() => setDetailsOpen(false)}>Закрыть</Button>
-                {activeTab === 'sent' && selectedProposal.status === 'pending' && (
-                  <Button variant="destructive" onClick={() => handleWithdraw(selectedProposal.id)}>
-                    <X className="h-4 w-4 mr-1" />
-                    Отозвать отклик
-                  </Button>
-                )}
-                {activeTab === 'sent' && selectedProposal.status === 'withdrawn' && (
-                  <Button variant="destructive" onClick={() => handleDelete(selectedProposal.id)}>
-                    <X className="h-4 w-4 mr-1" />
-                    Удалить окончательно
-                  </Button>
-                )}
-                {activeTab === 'received' && selectedProposal.status === 'pending' && (
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => handleReject(selectedProposal.id)}
-                      disabled={acceptingProposal === selectedProposal.id}
-                    >
-                      <X className="h-4 w-4 mr-1" />
-                      Отклонить
-                    </Button>
-                    <Button
-                      onClick={() => handleAccept(selectedProposal)}
-                      className="px-6"
-                      disabled={acceptingProposal === selectedProposal.id}
-                    >
-                      {acceptingProposal === selectedProposal.id ? (
-                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                      ) : (
-                        <CheckCircle className="h-4 w-4 mr-1" />
-                      )}
-                      {acceptingProposal === selectedProposal.id ? 'Принимаю...' : 'Принять'}
-                    </Button>
-                  </div>
+                {selectedProposal.status !== 'rejected' && (
+                  <>
+                    {activeTab === 'sent' && selectedProposal.status === 'pending' && (
+                      <Button variant="destructive" onClick={() => handleWithdraw(selectedProposal.id)}>
+                        <X className="h-4 w-4 mr-1" />
+                        Отозвать отклик
+                      </Button>
+                    )}
+                    {activeTab === 'sent' && selectedProposal.status === 'withdrawn' && (
+                      <Button variant="destructive" onClick={() => handleDelete(selectedProposal.id)}>
+                        <X className="h-4 w-4 mr-1" />
+                        Удалить окончательно
+                      </Button>
+                    )}
+                    {activeTab === 'received' && selectedProposal.status === 'pending' && (
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => handleReject(selectedProposal.id)}
+                          disabled={acceptingProposal === selectedProposal.id}
+                        >
+                          <X className="h-4 w-4 mr-1" />
+                          Отклонить
+                        </Button>
+                        <Button
+                          onClick={() => handleAccept(selectedProposal)}
+                          className="px-6"
+                          disabled={acceptingProposal === selectedProposal.id}
+                        >
+                          {acceptingProposal === selectedProposal.id ? (
+                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                          ) : (
+                            <CheckCircle className="h-4 w-4 mr-1" />
+                          )}
+                          {acceptingProposal === selectedProposal.id ? 'Принимаю...' : 'Принять'}
+                        </Button>
+                      </div>
+                    )}
+                  </>
                 )}
               </DialogFooter>
             </>

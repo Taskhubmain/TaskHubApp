@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Star, Heart, MessageSquare, MapPin, AtSign, Link as LinkIcon, Clock, Image as ImageIcon, ExternalLink, Loader2, Eye, Calendar, Upload, X, Share2, Check, GraduationCap, Sparkles, Lock, Mail, AlertCircle, CheckCircle2, KeyRound, ShoppingCart } from 'lucide-react';
+import { Star, MessageSquare, MapPin, AtSign, Link as LinkIcon, Clock, Image as ImageIcon, ExternalLink, Loader2, Calendar, Upload, X, Share2, Check, GraduationCap, Sparkles, Lock, Mail, AlertCircle, CheckCircle2, KeyRound, ShoppingCart, RefreshCw, Award, DollarSign, Tag, ChevronLeft, ChevronRight } from 'lucide-react';
 import { MediaEditor } from '@/components/MediaEditor';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,12 +8,43 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { ProposalLimitIndicator } from '@/components/ui/ProposalLimitIndicator';
+import BuyProposalsDialog from '@/components/BuyProposalsDialog';
 import SubscriptionPurchaseDialog from '@/components/SubscriptionPurchaseDialog';
 import { getSupabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRegion } from '@/contexts/RegionContext';
+import PriceDisplay from '@/components/PriceDisplay';
+import { NoTranslate } from '@/components/NoTranslate';
+
+interface Order {
+  id: string;
+  title: string;
+  description: string;
+  price_min: number;
+  price_max: number;
+  tags: string[];
+  category: string;
+  subcategory: string;
+  created_at: string;
+  status: string;
+  user_id: string;
+  currency?: string;
+  engagement?: string;
+}
+
+interface Recommendation {
+  id: string;
+  order_id: string;
+  match_score: number;
+  match_reasons: Array<{ type: string; value: string }>;
+  order?: Order;
+}
+
+const ITEMS_PER_PAGE = 6;
 
 export default function ProfilePage() {
   const { user, updateUserEmail } = useAuth();
+  const { selectedRegion } = useRegion();
   const supabase = getSupabase();
   const [tab, setTab] = useState('portfolio');
 
@@ -59,6 +90,17 @@ export default function ProfilePage() {
   const [newEmail, setNewEmail] = useState('');
   const [proposalLimitData, setProposalLimitData] = useState<{ used: number; monthStart: string; purchased: number } | null>(null);
   const [buyProposalsDialogOpen, setBuyProposalsDialogOpen] = useState(false);
+  const [hasSubscription, setHasSubscription] = useState(false);
+  const [daysRemaining, setDaysRemaining] = useState(0);
+  const [showSubscriptionDialog, setShowSubscriptionDialog] = useState(false);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [tasksPage, setTasksPage] = useState(1);
+  const ITEMS_PER_PAGE = 3;
+  const [insufficientProfile, setInsufficientProfile] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [profile, setProfile] = useState(() => {
     const raw = typeof window !== 'undefined' && localStorage.getItem('fh_profile');
     return raw ? JSON.parse(raw) : {
@@ -89,6 +131,12 @@ export default function ProfilePage() {
       loadTabData();
     }
   }, [tab]);
+
+  useEffect(() => {
+    if (user && tab === 'recommendations') {
+      checkSubscriptionStatus();
+    }
+  }, [tab, user]);
 
   const checkAuthProvider = async () => {
     if (!user) return;
@@ -166,7 +214,134 @@ export default function ProfilePage() {
       await loadPortfolioProjects();
     } else if (tab === 'reviews' && reviews.length === 0) {
       await loadReviews();
+    } else if (tab === 'recommendations') {
+      await checkSubscriptionStatus();
     }
+  };
+
+  const checkSubscriptionStatus = async () => {
+    if (!user) return;
+
+    setLoadingRecommendations(true);
+    try {
+      const { data: hasActiveSub } = await supabase.rpc('has_active_recommendations_subscription', {
+        p_user_id: user.id,
+      });
+
+      setHasSubscription(hasActiveSub || false);
+
+      if (hasActiveSub) {
+        const { data: days } = await supabase.rpc('get_subscription_days_remaining', {
+          p_user_id: user.id,
+        });
+        setDaysRemaining(days || 0);
+
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('skills, specialty')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        const skills = profileData?.skills || [];
+        const specialty = profileData?.specialty;
+
+        if (skills.length < 6 || !specialty) {
+          setInsufficientProfile(true);
+        } else {
+          setInsufficientProfile(false);
+          await loadRecommendations();
+        }
+      }
+    } catch (err) {
+      console.error('Error checking subscription:', err);
+    } finally {
+      setLoadingRecommendations(false);
+    }
+  };
+
+  const loadRecommendations = async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('order_recommendations')
+        .select(`
+          id,
+          order_id,
+          match_score,
+          match_reasons,
+          order:orders (
+            id,
+            title,
+            description,
+            price_min,
+            price_max,
+            tags,
+            category,
+            subcategory,
+            created_at,
+            status,
+            user_id,
+            currency,
+            engagement
+          )
+        `)
+        .eq('user_id', user.id)
+        .eq('is_visible', true)
+        .order('match_score', { ascending: false });
+
+      if (error) throw error;
+
+      const validRecommendations = (data || []).filter(
+        (rec: any) => rec.order && rec.order.status === 'open'
+      );
+
+      setRecommendations(validRecommendations);
+    } catch (err) {
+      console.error('Error loading recommendations:', err);
+    }
+  };
+
+  const generateRecommendations = async () => {
+    if (!user || !hasSubscription) return;
+
+    setGenerating(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('No session');
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-order-recommendations`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to generate recommendations');
+      }
+
+      await loadRecommendations();
+    } catch (err: any) {
+      console.error('Error generating recommendations:', err);
+      alert('Ошибка при генерации рекомендаций: ' + err.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleSubscriptionSuccess = async () => {
+    setShowSubscriptionDialog(false);
+    await checkSubscriptionStatus();
+  };
+
+  const handlePropose = (orderId: string) => {
+    window.location.hash = `#/proposals/create?orderId=${orderId}`;
   };
 
   const loadUserProfile = async () => {
@@ -230,11 +405,22 @@ export default function ProfilePage() {
     }, {} as Record<string, number>);
     const repeatCount = Object.values(clientCounts).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
 
-    const { data: proposalsData } = await supabase
+    // Получаем proposals с join к orders и tasks для расчета времени отклика
+    const { data: proposalsData, error: proposalsError } = await supabase
       .from('proposals')
-      .select('created_at, order_id, task_id')
+      .select(`
+        created_at,
+        order_id,
+        task_id,
+        orders(created_at),
+        tasks(created_at)
+      `)
       .eq('user_id', user.id)
       .order('created_at', { ascending: true });
+
+    if (proposalsError) {
+      console.error('Error loading proposals for response time:', proposalsError);
+    }
 
     let avgResponseTimeStr = 'N/A';
     if (proposalsData && proposalsData.length > 0) {
@@ -243,20 +429,11 @@ export default function ProfilePage() {
       for (const proposal of proposalsData) {
         let itemCreatedAt: string | null = null;
 
-        if (proposal.order_id) {
-          const { data: orderData } = await supabase
-            .from('orders')
-            .select('created_at')
-            .eq('id', proposal.order_id)
-            .maybeSingle();
-          itemCreatedAt = orderData?.created_at;
-        } else if (proposal.task_id) {
-          const { data: taskData } = await supabase
-            .from('tasks')
-            .select('created_at')
-            .eq('id', proposal.task_id)
-            .maybeSingle();
-          itemCreatedAt = taskData?.created_at;
+        // Получаем created_at из joined данных
+        if (proposal.order_id && proposal.orders) {
+          itemCreatedAt = (proposal.orders as any)?.created_at;
+        } else if (proposal.task_id && proposal.tasks) {
+          itemCreatedAt = (proposal.tasks as any)?.created_at;
         }
 
         if (itemCreatedAt) {
@@ -534,7 +711,7 @@ export default function ProfilePage() {
       return;
     }
 
-    let uploadedAvatarUrl = String(fd.get('avatar') || '');
+    let uploadedAvatarUrl = profile.avatar; // Сохраняем текущий URL, если не загружается новый
 
     if (avatarFile && user) {
       try {
@@ -587,7 +764,9 @@ export default function ProfilePage() {
       location: String(fd.get('location') || ''),
       contactEmail: String(fd.get('contactEmail') || ''),
       contactTelegram: String(fd.get('contactTelegram') || ''),
-      avatar: uploadedAvatarUrl
+      avatar: uploadedAvatarUrl,
+      age: fd.get('age') ? Number(fd.get('age')) : null,
+      experienceYears: fd.get('experienceYears') ? Number(fd.get('experienceYears')) : 0
     };
 
     try {
@@ -605,6 +784,8 @@ export default function ProfilePage() {
           contact_gmail: next.contactEmail,
           contact_telegram: next.contactTelegram,
           avatar_url: next.avatar,
+          age: next.age,
+          experience_years: next.experienceYears,
           updated_at: new Date().toISOString()
         })
         .eq('id', user.id);
@@ -768,16 +949,17 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen bg-background">
-        <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
-          <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 lg:gap-6 items-start">
-            <div className="grid gap-4 lg:gap-6">
-              <Card>
-                <CardContent className="p-4 lg:p-6 grid gap-3 lg:gap-4">
+        <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10">
+          <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-8 lg:gap-12 items-start">
+            <div className="grid gap-6 sticky top-24 self-start overflow-visible z-10">
+              <div className="overflow-visible">
+                <Card className="overflow-visible">
+                  <CardContent className="p-6 grid gap-4 overflow-visible">
                   <div className="flex items-center gap-3">
                     <div className="relative flex-shrink-0">
                       <img src={profile.avatar} alt="avatar" className="h-12 w-12 lg:h-16 lg:w-16 rounded-2xl object-cover" />
                       {profile.learningCompleted && (
-                        <div className="absolute -top-1 -right-1 bg-blue-500 rounded-full p-1.5 shadow-lg" title="Прошел обучение">
+                        <div className="absolute -top-1 -right-1 bg-blue-500 rounded-full p-1.5 shadow-lg z-50" title="Прошел обучение">
                           <GraduationCap className="h-3 w-3 lg:h-3.5 lg:w-3.5 text-white" />
                         </div>
                       )}
@@ -822,7 +1004,7 @@ export default function ProfilePage() {
                     <Button asChild variant="secondary" size="sm" className="h-9 text-sm"><a href="#/order/new">Создать заказ</a></Button>
                   </div>
                   <div className="flex items-center justify-between text-xs lg:text-sm text-[#3F7F6E]">
-                    <div className="relative">
+                    <div className="relative overflow-visible">
                       <button
                         className="flex items-center gap-1 underline hover:text-[#2F6F5E] transition-colors"
                         onClick={handleShareProfile}
@@ -837,7 +1019,7 @@ export default function ProfilePage() {
                             initial={{ opacity: 0, y: 5 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -5 }}
-                            className="absolute left-0 top-full mt-2 bg-[#3F7F6E] text-white px-3 py-1.5 rounded-lg shadow-lg flex items-center gap-2 text-sm whitespace-nowrap z-10"
+                            className="absolute left-0 top-full mt-2 bg-[#3F7F6E] text-white px-3 py-1.5 rounded-lg shadow-lg flex items-center gap-2 text-sm whitespace-nowrap z-50"
                           >
                             <Check className="h-4 w-4" />
                             Скопировано
@@ -848,13 +1030,14 @@ export default function ProfilePage() {
                     <button className="underline" onClick={() => setTab('edit')}>Редактировать</button>
                   </div>
                 </CardContent>
-              </Card>
+                </Card>
+              </div>
 
               {proposalLimitData && (
                 <div className="hidden lg:block">
                   <ProposalLimitIndicator
                     used={proposalLimitData.used}
-                    max={50}
+                    max={90}
                     purchased={proposalLimitData.purchased}
                     type="orders"
                     onBuyMore={() => setBuyProposalsDialogOpen(true)}
@@ -926,11 +1109,11 @@ export default function ProfilePage() {
               </Card>
             </div>
 
-            <div className="grid gap-4 lg:gap-6">
+            <div className="grid gap-6 relative z-20">
               <Card>
-                <CardContent className="p-3 lg:p-6">
-                  <div className="flex flex-col lg:flex-row lg:items-center gap-2">
-                    <div className="flex flex-wrap items-center gap-2 lg:flex-1">
+                <CardContent className="p-6">
+                  <div className="flex flex-col lg:flex-row lg:items-center gap-2 lg:justify-between">
+                    <div className="flex flex-wrap items-center gap-2">
                       {[{ id: 'portfolio', label: 'Портфолио' }, { id: 'market', label: 'Биржа' }, { id: 'about', label: 'О себе' }, { id: 'reviews', label: 'Отзывы' }, { id: 'settings', label: 'Настройки' }].map(t => (
                         <Button
                           key={t.id}
@@ -942,17 +1125,19 @@ export default function ProfilePage() {
                         </Button>
                       ))}
                     </div>
-                    <Button asChild variant="outline" className="border-[#3F7F6E] text-[#3F7F6E] hover:bg-[#3F7F6E]/5 h-8 lg:h-9 px-3 lg:px-4 text-xs lg:text-sm w-full lg:w-auto">
-                      <a href="#/recommendations" className="flex items-center justify-center gap-2">
-                        <Sparkles className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                        Рекомендации заказов
-                      </a>
+                    <Button
+                      variant={tab === 'recommendations' ? 'default' : 'ghost'}
+                      onClick={() => setTab('recommendations')}
+                      className="h-8 lg:h-9 px-3 lg:px-4 text-xs lg:text-sm bg-[#6FE7C8] hover:bg-[#5dd6b7] text-gray-900 font-medium"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 lg:h-4 lg:w-4 mr-1" />
+                      Рекомендации
                     </Button>
                   </div>
                 </CardContent>
               </Card>
 
-              <div className="relative">
+              <div>
                 <AnimatePresence initial={false} mode="wait">
                   {tab === 'portfolio' && (
                     <motion.div
@@ -1044,53 +1229,83 @@ export default function ProfilePage() {
                         </CardContent>
                       </Card>
                     ) : (
-                      <div className="grid grid-cols-1 gap-3 lg:gap-4">
-                        {userOrders.map((order, index) => (
+                      <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {userOrders.slice((ordersPage - 1) * ITEMS_PER_PAGE, ordersPage * ITEMS_PER_PAGE).map((order, index) => (
                           <motion.div
                             key={order.id}
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: index * 0.05, type: 'spring', stiffness: 300, damping: 30 }}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: index * 0.03 }}
                           >
-                            <Card className="cursor-pointer hover:shadow-lg hover:border-[#6FE7C8]/50 transition-all duration-300 hover:scale-[1.01]" onClick={() => openPreview(order, 'order')}>
-                            <CardContent className="p-4 lg:p-6">
-                              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3 lg:gap-6">
-                                <div className="flex-1 min-w-0">
-                                  <h4 className="font-semibold text-base lg:text-lg mb-2">{order.title}</h4>
-                                  <div className="flex items-center gap-2 mb-2 lg:mb-3">
-                                    <Badge variant="secondary" className="text-xs">{order.category}</Badge>
-                                    <Badge variant="outline" className="text-xs">{order.status}</Badge>
-                                  </div>
-                                  <div className="flex flex-wrap gap-1.5 lg:gap-2 mb-2 lg:mb-3">
-                                    {(order.tags || []).map((t: string) => (
-                                      <Badge key={t} variant="outline" className="text-xs">{t}</Badge>
-                                    ))}
-                                  </div>
-                                  <p className="text-xs lg:text-sm text-[#3F7F6E] mb-2 lg:mb-3 line-clamp-2">{order.description}</p>
-                                  <div className="font-semibold text-sm lg:text-base text-[#6FE7C8]">
-                                    {order.currency} {order.price_min}–{order.price_max}
-                                  </div>
+                            <Card
+                              className="h-full flex flex-col hover:shadow-lg transition-shadow cursor-pointer"
+                              onClick={() => openPreview(order, 'order')}
+                            >
+                              <CardHeader className="pb-3">
+                                <NoTranslate as="div">
+                                  <CardTitle className="text-base leading-6 pr-16 line-clamp-2">{order.title}</CardTitle>
+                                </NoTranslate>
+                                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                  <Badge variant="secondary">{order.category}</Badge>
+                                  {order.subcategory && <Badge variant="outline">{order.subcategory}</Badge>}
                                 </div>
-                                <div className="flex lg:flex-col items-center lg:items-end gap-3 lg:gap-2 text-xs lg:text-sm text-[#3F7F6E] lg:min-w-[140px]">
-                                  <div className="flex items-center gap-1.5">
-                                    <Calendar className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                                    <span>{new Date(order.created_at).toLocaleDateString('ru-RU')}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5">
-                                    <Eye className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                                    <span>{order.views_count || 0}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5">
-                                    <Heart className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                                    <span>{order.likes_count || 0}</span>
-                                  </div>
+                              </CardHeader>
+                              <CardContent className="flex-1 px-6">
+                                {order.tags && order.tags.length > 0 && (
+                                  <NoTranslate className="flex flex-wrap gap-2 mb-3">
+                                    {order.tags.slice(0, 3).map((tag: string, idx: number) => (
+                                      <Badge key={idx} variant="outline" className="text-xs">{tag}</Badge>
+                                    ))}
+                                    {order.tags.length > 3 && (
+                                      <Badge variant="outline" className="text-xs">+{order.tags.length - 3}</Badge>
+                                    )}
+                                  </NoTranslate>
+                                )}
+                                <NoTranslate className="text-sm text-[#3F7F6E] line-clamp-2 mb-3">{order.description}</NoTranslate>
+                                <div className="flex items-center gap-1.5 text-xs text-[#3F7F6E]">
+                                  <Calendar className="h-3.5 w-3.5" />
+                                  <span>{new Date(order.created_at).toLocaleDateString('ru-RU')}</span>
+                                </div>
+                              </CardContent>
+                              <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t">
+                                <div className="flex-shrink">
+                                  <PriceDisplay
+                                    amount={order.price_min}
+                                    maxAmount={order.price_max}
+                                    showRange={true}
+                                    fromCurrency={order.currency || 'USD'}
+                                  />
                                 </div>
                               </div>
-                            </CardContent>
-                          </Card>
+                            </Card>
                           </motion.div>
                         ))}
                       </div>
+                      {userOrders.length > ITEMS_PER_PAGE && (
+                        <div className="flex items-center justify-center gap-2 mt-6">
+                          <Button
+                            onClick={() => setOrdersPage(ordersPage - 1)}
+                            disabled={ordersPage === 1}
+                            variant="outline"
+                            className="h-10"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </Button>
+                          <span className="text-sm text-[#3F7F6E] min-w-[60px] text-center">
+                            {ordersPage} / {Math.ceil(userOrders.length / ITEMS_PER_PAGE)}
+                          </span>
+                          <Button
+                            onClick={() => setOrdersPage(ordersPage + 1)}
+                            disabled={ordersPage >= Math.ceil(userOrders.length / ITEMS_PER_PAGE)}
+                            variant="outline"
+                            className="h-10"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+                      </>
                     )}
                   </div>
 
@@ -1110,58 +1325,86 @@ export default function ProfilePage() {
                         </CardContent>
                       </Card>
                     ) : (
-                      <div className="grid grid-cols-1 gap-3 lg:gap-4">
-                        {userTasks.map((task, index) => (
+                      <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {userTasks.slice((tasksPage - 1) * ITEMS_PER_PAGE, tasksPage * ITEMS_PER_PAGE).map((task, index) => (
                           <motion.div
                             key={task.id}
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: index * 0.05, type: 'spring', stiffness: 300, damping: 30 }}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: index * 0.03 }}
                           >
-                            <Card className="cursor-pointer hover:shadow-lg hover:border-[#6FE7C8]/50 transition-all duration-300 hover:scale-[1.01]" onClick={() => openPreview(task, 'task')}>
-                            <CardContent className="p-4 lg:p-6">
-                              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3 lg:gap-6">
-                                <div className="flex-1 min-w-0">
-                                  <h4 className="font-semibold text-base lg:text-lg mb-2">{task.title}</h4>
-                                  <div className="flex items-center gap-2 mb-2 lg:mb-3 flex-wrap">
-                                    <Badge variant="secondary" className="text-xs">{task.category}</Badge>
-                                    <Badge variant="outline" className="text-xs">{task.status}</Badge>
-                                    {task.delivery_days && (
-                                      <Badge variant="outline" className="flex items-center gap-1 text-xs">
-                                        <Clock className="h-3 w-3" /> {task.delivery_days}д
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  <div className="flex flex-wrap gap-1.5 lg:gap-2 mb-2 lg:mb-3">
-                                    {(task.tags || []).map((t: string) => (
-                                      <Badge key={t} variant="outline" className="text-xs">{t}</Badge>
-                                    ))}
-                                  </div>
-                                  <p className="text-xs lg:text-sm text-[#3F7F6E] mb-2 lg:mb-3 line-clamp-2">{task.description}</p>
-                                  <div className="font-semibold text-sm lg:text-base text-[#6FE7C8]">
-                                    {task.currency} {task.price}
-                                  </div>
+                            <Card
+                              className="h-full flex flex-col hover:shadow-lg transition-shadow cursor-pointer"
+                              onClick={() => openPreview(task, 'task')}
+                            >
+                              <CardHeader className="pb-3">
+                                <NoTranslate as="div">
+                                  <CardTitle className="text-base leading-6 pr-16 line-clamp-2">{task.title}</CardTitle>
+                                </NoTranslate>
+                                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                  <Badge variant="secondary">{task.category}</Badge>
+                                  {task.subcategory && <Badge variant="outline">{task.subcategory}</Badge>}
+                                  {task.delivery_days && (
+                                    <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                                      <Clock className="h-3 w-3" /> {task.delivery_days}д
+                                    </Badge>
+                                  )}
                                 </div>
-                                <div className="flex lg:flex-col items-center lg:items-end gap-3 lg:gap-2 text-xs lg:text-sm text-[#3F7F6E] lg:min-w-[140px]">
-                                  <div className="flex items-center gap-1.5">
-                                    <Calendar className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                                    <span>{new Date(task.created_at).toLocaleDateString('ru-RU')}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5">
-                                    <Eye className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                                    <span>{task.views_count || 0}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5">
-                                    <Heart className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
-                                    <span>{task.likes_count || 0}</span>
-                                  </div>
+                              </CardHeader>
+                              <CardContent className="flex-1 px-6">
+                                {task.tags && task.tags.length > 0 && (
+                                  <NoTranslate className="flex flex-wrap gap-2 mb-3">
+                                    {task.tags.slice(0, 3).map((tag: string, idx: number) => (
+                                      <Badge key={idx} variant="outline" className="text-xs">{tag}</Badge>
+                                    ))}
+                                    {task.tags.length > 3 && (
+                                      <Badge variant="outline" className="text-xs">+{task.tags.length - 3}</Badge>
+                                    )}
+                                  </NoTranslate>
+                                )}
+                                <NoTranslate className="text-sm text-[#3F7F6E] line-clamp-2 mb-3">{task.description}</NoTranslate>
+                                <div className="flex items-center gap-1.5 text-xs text-[#3F7F6E]">
+                                  <Calendar className="h-3.5 w-3.5" />
+                                  <span>{new Date(task.created_at).toLocaleDateString('ru-RU')}</span>
+                                </div>
+                              </CardContent>
+                              <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t">
+                                <div className="flex-shrink">
+                                  <PriceDisplay
+                                    amount={task.price}
+                                    fromCurrency={task.currency || 'USD'}
+                                  />
                                 </div>
                               </div>
-                            </CardContent>
-                          </Card>
+                            </Card>
                           </motion.div>
                         ))}
                       </div>
+                      {userTasks.length > ITEMS_PER_PAGE && (
+                        <div className="flex items-center justify-center gap-2 mt-6">
+                          <Button
+                            onClick={() => setTasksPage(tasksPage - 1)}
+                            disabled={tasksPage === 1}
+                            variant="outline"
+                            className="h-10"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </Button>
+                          <span className="text-sm text-[#3F7F6E] min-w-[60px] text-center">
+                            {tasksPage} / {Math.ceil(userTasks.length / ITEMS_PER_PAGE)}
+                          </span>
+                          <Button
+                            onClick={() => setTasksPage(tasksPage + 1)}
+                            disabled={tasksPage >= Math.ceil(userTasks.length / ITEMS_PER_PAGE)}
+                            variant="outline"
+                            className="h-10"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+                      </>
                     )}
                   </div>
                 </>
@@ -1357,7 +1600,6 @@ export default function ProfilePage() {
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <Badge variant="outline" className="text-xs">{review.category}</Badge>
                                   <div className="flex items-center gap-1 text-emerald-600">
                                     <Star className="h-4 w-4 fill-emerald-600" />
                                     <span className="font-semibold">{review.rating}.0</span>
@@ -1563,6 +1805,16 @@ export default function ProfilePage() {
                       </div>
                       <div className="grid sm:grid-cols-2 gap-4">
                         <label className="grid gap-1">
+                          <span className="text-sm font-medium">Возраст</span>
+                          <Input type="number" name="age" defaultValue={profile.age || ''} className="h-11" min="16" max="100" placeholder="Не указано" />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-sm font-medium">Опыт работы (лет)</span>
+                          <Input type="number" name="experienceYears" defaultValue={profile.experienceYears || ''} className="h-11" min="0" max="50" placeholder="Не указано" />
+                        </label>
+                      </div>
+                      <div className="grid sm:grid-cols-2 gap-4">
+                        <label className="grid gap-1">
                           <span className="text-sm font-medium">Локация</span>
                           <Input name="location" defaultValue={profile.location} className="h-11" />
                         </label>
@@ -1582,6 +1834,373 @@ export default function ProfilePage() {
                     </form>
                   </CardContent>
                 </Card>
+                    </motion.div>
+                  )}
+
+                  {tab === 'recommendations' && (
+                    <motion.div
+                      key="recommendations"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -20 }}
+                      transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                    >
+                      {loadingRecommendations ? (
+                        <Card>
+                          <CardContent className="p-12 text-center">
+                            <Loader2 className="h-8 w-8 animate-spin text-[#6FE7C8] mx-auto mb-4" />
+                            <p className="text-gray-600">Загрузка...</p>
+                          </CardContent>
+                        </Card>
+                      ) : !hasSubscription ? (
+                        <motion.div
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="bg-gradient-to-br from-[#3F7F6E] to-[#2F6F5E] rounded-2xl p-8 text-white shadow-xl"
+                        >
+                          <div className="flex items-start gap-4 mb-6">
+                            <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center flex-shrink-0">
+                              <Sparkles className="w-8 h-8 text-white" />
+                            </div>
+                            <div>
+                              <h1 className="text-3xl font-bold mb-2">AI Рекомендации заказов</h1>
+                              <p className="text-white/90 text-lg">
+                                Получайте персональный подбор заказов на основе вашего профиля
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="bg-white/10 rounded-xl p-6 mb-6">
+                            <h3 className="font-semibold text-lg mb-4">Что вы получите:</h3>
+                            <ul className="space-y-3">
+                              <li className="flex items-start gap-3">
+                                <Award className="w-5 h-5 mt-0.5 flex-shrink-0" />
+                                <span>AI анализирует вашу специальность, навыки, опыт и рейтинг</span>
+                              </li>
+                              <li className="flex items-start gap-3">
+                                <Tag className="w-5 h-5 mt-0.5 flex-shrink-0" />
+                                <span>Персональный подбор открытых заказов с высоким совпадением</span>
+                              </li>
+                              <li className="flex items-start gap-3">
+                                <DollarSign className="w-5 h-5 mt-0.5 flex-shrink-0" />
+                                <span>Заказы соответствующие вашему бюджету и опыту</span>
+                              </li>
+                              <li className="flex items-start gap-3">
+                                <RefreshCw className="w-5 h-5 mt-0.5 flex-shrink-0" />
+                                <span>Автоматическое обновление списка рекомендаций</span>
+                              </li>
+                            </ul>
+                          </div>
+
+                          <Button
+                            onClick={() => setShowSubscriptionDialog(true)}
+                            className="w-full h-14 text-lg bg-white text-[#3F7F6E] hover:bg-gray-100"
+                          >
+                            Купить подписку на рекомендации
+                          </Button>
+                        </motion.div>
+                      ) : insufficientProfile ? (
+                        <div>
+                          <motion.div
+                            initial={{ opacity: 0, y: -20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-gradient-to-r from-[#3F7F6E] to-[#2F6F5E] rounded-xl p-4 mb-6 text-white"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <Award className="w-6 h-6" />
+                                <div>
+                                  <p className="font-semibold">Активная подписка на рекомендации</p>
+                                  <p className="text-sm text-white/80">Осталось дней: {daysRemaining}</p>
+                                </div>
+                              </div>
+                              <Button
+                                onClick={() => setShowSubscriptionDialog(true)}
+                                variant="outline"
+                                className="bg-white/20 border-white/30 hover:bg-white/30 text-white"
+                              >
+                                Продлить подписку
+                              </Button>
+                            </div>
+                          </motion.div>
+
+                          <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-white rounded-xl p-8 shadow-lg border-2 border-orange-200"
+                          >
+                            <div className="flex items-start gap-4">
+                              <div className="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                                <AlertCircle className="w-6 h-6 text-orange-600" />
+                              </div>
+                              <div className="flex-1">
+                                <h2 className="text-2xl font-bold text-gray-900 mb-3">
+                                  Вы указали недостаточно информации о себе в профиле
+                                </h2>
+                                <p className="text-gray-600 mb-6">
+                                  Для генерации персональных рекомендаций необходимо:
+                                </p>
+                                <ul className="space-y-2 mb-6">
+                                  <li className="flex items-center gap-2">
+                                    <div className={`w-2 h-2 rounded-full ${profile?.skills?.length >= 6 ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                    <span className="text-gray-700">
+                                      Минимум 6 тегов (указано: {profile?.skills?.length || 0})
+                                    </span>
+                                  </li>
+                                  <li className="flex items-center gap-2">
+                                    <div className={`w-2 h-2 rounded-full ${profile?.role ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                    <span className="text-gray-700">
+                                      Специальность {profile?.role ? '(указана)' : '(не указана)'}
+                                    </span>
+                                  </li>
+                                </ul>
+                                <Button
+                                  onClick={() => setTab('edit')}
+                                  className="bg-[#3F7F6E] hover:bg-[#2F6F5E]"
+                                >
+                                  Заполнить профиль
+                                </Button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        </div>
+                      ) : (
+                        <div>
+                          <motion.div
+                            initial={{ opacity: 0, y: -20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-gradient-to-r from-[#3F7F6E] to-[#2F6F5E] rounded-xl p-4 mb-6 text-white"
+                          >
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                              <div className="flex items-center gap-3">
+                                <Award className="w-6 h-6" />
+                                <div>
+                                  <p className="font-semibold">Активная подписка на рекомендации</p>
+                                  <p className="text-sm text-white/80">Осталось дней: {daysRemaining}</p>
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  onClick={generateRecommendations}
+                                  disabled={generating}
+                                  className="bg-white/20 border border-white/30 hover:bg-white/30 text-white"
+                                >
+                                  <RefreshCw className={`w-4 h-4 mr-2 ${generating ? 'animate-spin' : ''}`} />
+                                  {generating ? 'Генерация...' : 'Обновить'}
+                                </Button>
+                                <Button
+                                  onClick={() => setShowSubscriptionDialog(true)}
+                                  variant="outline"
+                                  className="bg-white/20 border-white/30 hover:bg-white/30 text-white"
+                                >
+                                  Продлить
+                                </Button>
+                              </div>
+                            </div>
+                          </motion.div>
+
+                          <div className="mb-6">
+                            <h2 className="text-2xl font-bold text-gray-900 mb-2">Рекомендации для вас</h2>
+                            <p className="text-gray-600">
+                              AI подобрал {recommendations.length} заказов на основе вашего профиля
+                            </p>
+                          </div>
+
+                          {recommendations.length === 0 ? (
+                            <Card>
+                              <CardContent className="p-12 text-center">
+                                <Sparkles className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                                <h3 className="text-xl font-semibold text-gray-900 mb-2">
+                                  Пока нет рекомендаций
+                                </h3>
+                                <p className="text-gray-600 mb-6">
+                                  Нажмите кнопку "Обновить" чтобы AI подобрал заказы для вас
+                                </p>
+                                <Button
+                                  onClick={generateRecommendations}
+                                  disabled={generating}
+                                  className="bg-[#3F7F6E] hover:bg-[#2F6F5E]"
+                                >
+                                  <RefreshCw className={`w-4 h-4 mr-2 ${generating ? 'animate-spin' : ''}`} />
+                                  {generating ? 'Генерация...' : 'Сгенерировать рекомендации'}
+                                </Button>
+                              </CardContent>
+                            </Card>
+                          ) : (
+                            <>
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+                                {(() => {
+                                  const totalPages = Math.ceil(recommendations.length / ITEMS_PER_PAGE);
+                                  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+                                  const endIndex = startIndex + ITEMS_PER_PAGE;
+                                  const currentRecommendations = recommendations.slice(startIndex, endIndex);
+
+                                  return currentRecommendations.map((rec, index) => {
+                                    const order = rec.order;
+                                    if (!order) return null;
+
+                                    return (
+                                      <motion.div
+                                        key={rec.id}
+                                        initial={{ opacity: 0, y: 8 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ delay: index * 0.03 }}
+                                      >
+                                        <Card
+                                          className="h-full flex flex-col hover:shadow-lg transition-shadow cursor-pointer relative"
+                                          onClick={() => openPreview(order, 'order')}
+                                        >
+                                          <div className="absolute top-3 right-3 z-10">
+                                            <Badge
+                                              className={`${
+                                                rec.match_score >= 80
+                                                  ? 'bg-green-100 text-green-800 border-green-300'
+                                                  : rec.match_score >= 60
+                                                  ? 'bg-blue-100 text-blue-800 border-blue-300'
+                                                  : 'bg-gray-100 text-gray-800 border-gray-300'
+                                              }`}
+                                            >
+                                              {rec.match_score}%
+                                            </Badge>
+                                          </div>
+                                          <CardHeader className="pb-3">
+                                            <NoTranslate as="div">
+                                              <CardTitle className="text-base leading-6 pr-16 line-clamp-2">{order.title}</CardTitle>
+                                            </NoTranslate>
+                                            <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                              <Badge variant="secondary">{order.category}</Badge>
+                                              {order.subcategory && <Badge variant="outline">{order.subcategory}</Badge>}
+                                            </div>
+                                          </CardHeader>
+                                          <CardContent className="flex-1 px-6">
+                                            {order.tags && order.tags.length > 0 && (
+                                              <NoTranslate className="flex flex-wrap gap-2 mb-3">
+                                                {order.tags.slice(0, 3).map((tag: string, idx: number) => (
+                                                  <Badge key={idx} variant="outline" className="text-xs">{tag}</Badge>
+                                                ))}
+                                                {order.tags.length > 3 && (
+                                                  <Badge variant="outline" className="text-xs">+{order.tags.length - 3}</Badge>
+                                                )}
+                                              </NoTranslate>
+                                            )}
+                                            <NoTranslate className="text-sm text-[#3F7F6E] line-clamp-2 mb-3">{order.description}</NoTranslate>
+                                            {rec.match_reasons && rec.match_reasons.length > 0 && (
+                                              <div className="space-y-1 mb-3">
+                                                {rec.match_reasons.slice(0, 2).map((reason: any, idx: number) => {
+                                                  const parts = reason.value.split(':');
+                                                  const translatable = parts[0] + ':';
+                                                  const nonTranslatable = parts.slice(1).join(':');
+
+                                                  return (
+                                                    <div key={idx} className="flex items-start gap-2">
+                                                      <div className="w-1.5 h-1.5 rounded-full bg-[#6FE7C8] mt-1.5 flex-shrink-0"></div>
+                                                      <p className="text-xs text-gray-600">
+                                                        {translatable}
+                                                        <NoTranslate as="span">{nonTranslatable}</NoTranslate>
+                                                      </p>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                          </CardContent>
+                                          <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t">
+                                            <div className="flex-shrink">
+                                              <PriceDisplay
+                                                amount={order.price_min}
+                                                maxAmount={order.price_max}
+                                                showRange={true}
+                                                fromCurrency={order.currency || 'USD'}
+                                              />
+                                            </div>
+                                            <Button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handlePropose(order.id);
+                                              }}
+                                              className="bg-[#6FE7C8] hover:bg-[#5dd6b7] text-gray-900 text-sm h-9 px-4 flex-shrink-0 whitespace-nowrap"
+                                            >
+                                              Откликнуться
+                                            </Button>
+                                          </div>
+                                        </Card>
+                                      </motion.div>
+                                    );
+                                  });
+                                })()}
+                              </div>
+
+                              {(() => {
+                                const totalPages = Math.ceil(recommendations.length / ITEMS_PER_PAGE);
+                                if (totalPages <= 1) return null;
+
+                                return (
+                                  <div className="flex items-center justify-center gap-2">
+                                    <Button
+                                      onClick={() => {
+                                        setCurrentPage(currentPage - 1);
+                                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                                      }}
+                                      disabled={currentPage === 1}
+                                      variant="outline"
+                                      className="h-10"
+                                    >
+                                      <ChevronLeft className="w-4 h-4" />
+                                    </Button>
+
+                                    <div className="flex gap-1">
+                                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+                                        if (
+                                          page === 1 ||
+                                          page === totalPages ||
+                                          (page >= currentPage - 1 && page <= currentPage + 1)
+                                        ) {
+                                          return (
+                                            <Button
+                                              key={page}
+                                              onClick={() => {
+                                                setCurrentPage(page);
+                                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                                              }}
+                                              variant={currentPage === page ? 'default' : 'outline'}
+                                              className={`h-10 w-10 ${
+                                                currentPage === page
+                                                  ? 'bg-[#3F7F6E] hover:bg-[#2F6F5E]'
+                                                  : ''
+                                              }`}
+                                            >
+                                              {page}
+                                            </Button>
+                                          );
+                                        } else if (page === currentPage - 2 || page === currentPage + 2) {
+                                          return (
+                                            <span key={page} className="flex items-center px-2">
+                                              ...
+                                            </span>
+                                          );
+                                        }
+                                        return null;
+                                      })}
+                                    </div>
+
+                                    <Button
+                                      onClick={() => {
+                                        setCurrentPage(currentPage + 1);
+                                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                                      }}
+                                      disabled={currentPage === totalPages}
+                                      variant="outline"
+                                      className="h-10"
+                                    >
+                                      <ChevronRight className="w-4 h-4" />
+                                    </Button>
+                                  </div>
+                                );
+                              })()}
+                            </>
+                          )}
+                        </div>
+                      )}
                     </motion.div>
                   )}
 
@@ -1766,14 +2385,10 @@ export default function ProfilePage() {
               <>
                 <DialogHeader>
                   <DialogTitle data-wg-notranslate>{previewItem.title}</DialogTitle>
-                  <DialogDescription className="flex items-center gap-2 mt-2">
+                  <DialogDescription className="flex items-center gap-2 mt-2 flex-wrap">
                     <Badge variant="secondary">{previewItem.category}</Badge>
+                    {previewItem.subcategory && <Badge variant="outline">{previewItem.subcategory}</Badge>}
                     {previewType === 'order' && previewItem.engagement && <Badge variant="outline">{previewItem.engagement}</Badge>}
-                    {previewType === 'task' && previewItem.delivery_days && (
-                      <Badge variant="outline" className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" /> {previewItem.delivery_days} дней
-                      </Badge>
-                    )}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4">
@@ -1781,45 +2396,44 @@ export default function ProfilePage() {
                     <div className="text-sm font-medium mb-2">Описание</div>
                     <p className="text-sm text-[#3F7F6E] leading-relaxed whitespace-pre-wrap" data-wg-notranslate>{previewItem.description}</p>
                   </div>
-                  <div>
-                    <div className="text-sm font-medium mb-2">Теги</div>
-                    <div className="flex flex-wrap gap-2">
-                      {(previewItem.tags || []).map((t: string) => (
-                        <Badge key={t} variant="outline">{t}</Badge>
-                      ))}
-                    </div>
-                  </div>
-                  {previewType === 'task' && previewItem.features && (
+                  {previewItem.tags && previewItem.tags.length > 0 && (
                     <div>
-                      <div className="text-sm font-medium mb-2">Что входит</div>
-                      <ul className="list-disc list-inside text-sm text-[#3F7F6E]">
-                        {previewItem.features.map((f: string, i: number) => (
-                          <li key={i}>{f}</li>
+                      <div className="text-sm font-medium mb-2">Теги</div>
+                      <div className="flex flex-wrap gap-2">
+                        {previewItem.tags.map((t: string) => (
+                          <Badge key={t} variant="outline">{t}</Badge>
                         ))}
-                      </ul>
+                      </div>
                     </div>
                   )}
                   <div className="flex items-center justify-between pt-3 border-t">
-                    <div className="flex items-center gap-3">
-                      {profile?.avatar ? (
-                        <img src={profile.avatar} alt={profile.name} className="h-10 w-10 rounded-full object-cover" />
-                      ) : (
-                        <div className="h-10 w-10 rounded-full bg-[#EFFFF8] flex items-center justify-center font-medium">
-                          {profile?.name?.charAt(0).toUpperCase() || 'U'}
-                        </div>
-                      )}
-                      <div>
-                        <div className="font-medium">{profile?.name || 'Пользователь'}</div>
-                        <div className="text-xs text-[#3F7F6E]">Опубликовано: {new Date(previewItem.created_at).toLocaleDateString()}</div>
-                      </div>
+                    <div className="text-xs text-gray-500">
+                      Опубликовано: {new Date(previewItem.created_at).toLocaleDateString('ru')}
                     </div>
-                    <div className="text-xl font-semibold text-[#6FE7C8]">
-                      {previewType === 'order' ? `${previewItem.currency} ${previewItem.price_min}–${previewItem.price_max}` : `${previewItem.currency} ${previewItem.price}`}
+                    <div className="text-xl">
+                      <PriceDisplay
+                        amount={previewItem.price_min}
+                        maxAmount={previewItem.price_max}
+                        showRange={true}
+                        fromCurrency={previewItem.currency || 'USD'}
+                        selectedRegion={selectedRegion}
+                      />
                     </div>
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button onClick={() => setPreviewOpen(false)}>Закрыть</Button>
+                  <Button variant="ghost" onClick={() => setPreviewOpen(false)}>Закрыть</Button>
+                  {previewItem.user_id !== user?.id && (
+                    <Button
+                      onClick={() => {
+                        setPreviewOpen(false);
+                        handlePropose(previewItem.id);
+                      }}
+                      className="bg-[#6FE7C8] hover:bg-[#5dd6b7] text-gray-900"
+                    >
+                      Откликнуться
+                    </Button>
+                  )}
                 </DialogFooter>
               </>
             )}
@@ -1904,10 +2518,16 @@ export default function ProfilePage() {
         <MediaEditor file={fileToEdit} onSave={handleMediaSave} onCancel={handleMediaCancel} />
       )}
 
-      <SubscriptionPurchaseDialog
-        isOpen={buyProposalsDialogOpen}
+      <BuyProposalsDialog
+        open={buyProposalsDialogOpen}
         onClose={() => setBuyProposalsDialogOpen(false)}
         onSuccess={loadProposalLimits}
+      />
+
+      <SubscriptionPurchaseDialog
+        isOpen={showSubscriptionDialog}
+        onClose={() => setShowSubscriptionDialog(false)}
+        onSuccess={handleSubscriptionSuccess}
       />
     </div>
   );

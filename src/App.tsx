@@ -13,7 +13,9 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import NotFound from './pages/NotFound';
 import OAuthCallback from './pages/OAuthCallback';
-import { useAppUrlHandler } from './hooks/useAppUrlHandler';
+import { Capacitor } from '@capacitor/core';
+import { StatusBar } from '@capacitor/status-bar';
+import AppWrapper from './components/AppWrapper'
 
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const OrderCreatePage = lazy(() => import('./pages/OrderCreatePage'));
@@ -51,6 +53,9 @@ import PaymentMethodsPage from './pages/PaymentMethodsPage';
 import MediaLibraryPage from './pages/MediaLibraryPage';
 import NotificationSettingsPage from './pages/NotificationSettingsPage';
 import WalletPage from './pages/WalletPage';
+import TermsPage from './pages/TermsPage';
+import PrivacyPage from './pages/PrivacyPage';
+import PaymentsInfoPage from './pages/PaymentsInfoPage';
 import {
   DealPage,
   NotificationsPage,
@@ -60,9 +65,6 @@ import {
   SettingsSecurityPage,
   OnboardingPage,
   AdminPage,
-  TermsPage,
-  PrivacyPage,
-  PaymentsPage,
   FAQPage,
   ContactPage,
   NotFoundPage
@@ -74,16 +76,12 @@ function AppContent() {
 
   useEffect(() => {
     const handleHashChange = () => {
-      // Check full hash including params
       const fullHash = window.location.hash;
-
-      // Handle OAuth callback with access_token in hash
       if (fullHash.includes('access_token=')) {
         console.log('OAuth callback detected, showing callback page...');
         setRoute('/oauth-callback');
         return;
       }
-
       const hash = fullHash.slice(1) || '/';
       const routeWithoutQuery = hash.split('?')[0];
       setRoute(routeWithoutQuery);
@@ -202,7 +200,7 @@ function AppContent() {
   } else if (route === '/privacy') {
     Page = PrivacyPage;
   } else if (route === '/payments') {
-    Page = PaymentsPage;
+    Page = PaymentsInfoPage;
   } else if (route === '/faq') {
     Page = FAQPage;
   } else if (route === '/contact') {
@@ -264,20 +262,36 @@ function AppContent() {
 function App() {
   const [error, setError] = useState<string | null>(null);
 
-  // ===== Вызов hook для deep links и OAuth =====
-  useAppUrlHandler();
-
   useEffect(() => {
-    try {
-      const testSupabase = import.meta.env.VITE_SUPABASE_URL;
-      if (!testSupabase) {
-        setError('Supabase URL not configured');
-        console.error('Missing VITE_SUPABASE_URL');
+    let mounted = true;
+
+    const init = async () => {
+      try {
+        // Try to enable webview overlay on mobile - safe-area CSS will then work as expected
+        if (Capacitor.getPlatform() !== 'web') {
+          try {
+            await StatusBar.setOverlaysWebView({ overlay: false });
+          } catch (sbErr) {
+            console.warn('StatusBar.setOverlaysWebView failed:', sbErr);
+          }
+        }
+
+        const testSupabase = import.meta.env.VITE_SUPABASE_URL;
+        if (!testSupabase && mounted) {
+          setError('Supabase URL not configured');
+          console.error('Missing VITE_SUPABASE_URL');
+        }
+      } catch (err) {
+        if (mounted) setError('Failed to initialize application');
+        console.error('App initialization error:', err);
       }
-    } catch (err) {
-      setError('Failed to initialize application');
-      console.error('App initialization error:', err);
-    }
+    };
+
+    init();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   if (error) {
@@ -295,7 +309,9 @@ function App() {
   return (
     <AuthProvider>
       <RegionProvider>
-        <AppContent />
+        <AppWrapper>
+          <AppContent/>
+        </AppWrapper>
       </RegionProvider>
     </AuthProvider>
   );

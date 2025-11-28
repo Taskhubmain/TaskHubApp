@@ -35,13 +35,12 @@ import { queryWithRetry, subscribeWithMonitoring } from '@/lib/supabase-utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { navigateToProfile } from '@/lib/navigation';
 import { MediaEditor } from '@/components/MediaEditor';
-import { useContentModeration } from '@/hooks/useContentModeration';
-import { ModerationAlert } from '@/components/ui/ModerationAlert';
 import { ImageViewer } from '@/components/ImageViewer';
 import { ChatCRMPanel } from '@/components/ChatCRMPanel';
 import { CRMConfirmation } from '@/components/CRMConfirmation';
 import DealProgressPanel from '@/components/DealProgressPanel';
 import { ReviewInChat } from '@/components/ReviewInChat';
+import { SystemMessage } from '@/components/SystemMessage';
 import { useRegion } from '@/contexts/RegionContext';
 
 const pageVariants = { initial: { opacity: 0 }, in: { opacity: 1 }, out: { opacity: 0 } };
@@ -118,9 +117,6 @@ export default function MessagesPage() {
   const [isUserBlocked, setIsUserBlocked] = useState(false);
   const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
 
-  const { isBlocked, blockMessage, checkContent, checkContentImmediate } = useContentModeration({
-    contentType: 'message',
-  });
   const [crmPanelOpen, setCrmPanelOpen] = useState(false);
   const [progressPanelOpen, setProgressPanelOpen] = useState(false);
   const [showReviewForm, setShowReviewForm] = useState(false);
@@ -169,11 +165,11 @@ export default function MessagesPage() {
 
     const translateAllMessages = async () => {
       const messagesToTranslate = messages.filter(
-        (msg) => (msg.content || msg.text) && !translatedMessages[msg.id]
+        (msg) => (msg.text || msg.content) && !translatedMessages[msg.id]
       );
 
       for (const msg of messagesToTranslate) {
-        const textToTranslate = msg.content || msg.text;
+        const textToTranslate = msg.text || msg.content;
         if (textToTranslate) {
           const translated = await translateText(textToTranslate, language);
           setTranslatedMessages((prev) => ({ ...prev, [msg.id]: translated }));
@@ -354,9 +350,104 @@ export default function MessagesPage() {
       }
     }).then(sub => { profilesSubscription = sub; });
 
+    let dealsSubscription: any = null;
+    subscribeWithMonitoring('deals-changes', {
+      table: 'deals',
+      event: 'UPDATE',
+      filter: user ? `or(client_id.eq.${user.id},freelancer_id.eq.${user.id})` : undefined,
+      callback: (payload) => {
+        const updatedDeal = payload.new as any;
+        setDeals((prev) => {
+          const exists = prev.some((d) => d.id === updatedDeal.id);
+          if (!exists) return prev;
+
+          return prev.map((d) => d.id === updatedDeal.id ? { ...d, ...updatedDeal } : d);
+        });
+
+        // Auto-open progress panel if current deal progress changed
+        if (selectedChatId && updatedDeal.chat_id === selectedChatId) {
+          const currentDeal = deals.find(d => d.chat_id === selectedChatId);
+          if (currentDeal && currentDeal.current_progress !== updatedDeal.current_progress) {
+            setProgressPanelOpen(true);
+          }
+        }
+      },
+      onError: () => {}
+    }).then(sub => { dealsSubscription = sub; });
+
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     const chatId = params.get('chat');
-    if (chatId) setSelectedChatId(chatId);
+    const toUserId = params.get('to');
+
+    if (chatId) {
+      setSelectedChatId(chatId);
+    } else if (toUserId && user) {
+      // Найти или создать чат с пользователем
+      (async () => {
+        try {
+          const supabase = getSupabase();
+
+          // Ищем существующий чат между пользователями
+          const { data: existingChats } = await supabase
+            .from('chats')
+            .select('id')
+            .or(`and(participant1_id.eq.${user.id},participant2_id.eq.${toUserId}),and(participant1_id.eq.${toUserId},participant2_id.eq.${user.id})`);
+
+          if (existingChats && existingChats.length > 0) {
+            // Если есть несколько чатов, берем первый (общий чат, не чат сделки)
+            // Нужно отфильтровать чаты сделок
+            const { data: dealChatsData } = await supabase
+              .from('deals')
+              .select('chat_id')
+              .or(`and(client_id.eq.${user.id},freelancer_id.eq.${toUserId}),and(client_id.eq.${toUserId},freelancer_id.eq.${user.id})`);
+
+            const dealChatIds = new Set((dealChatsData || []).map(d => d.chat_id));
+            const generalChat = existingChats.find(chat => !dealChatIds.has(chat.id));
+
+            if (generalChat) {
+              setSelectedChatId(generalChat.id);
+              setShowChatOnMobile(true);
+            } else {
+              // Все чаты - это чаты сделок, создаем общий чат
+              const { data: newChat, error } = await supabase
+                .from('chats')
+                .insert({
+                  participant1_id: user.id,
+                  participant2_id: toUserId
+                })
+                .select()
+                .single();
+
+              if (!error && newChat) {
+                setSelectedChatId(newChat.id);
+                setShowChatOnMobile(true);
+                // Перезагружаем чаты чтобы новый чат появился в списке
+                await loadChats();
+              }
+            }
+          } else {
+            // Чата нет, создаем новый
+            const { data: newChat, error } = await supabase
+              .from('chats')
+              .insert({
+                participant1_id: user.id,
+                participant2_id: toUserId
+              })
+              .select()
+              .single();
+
+            if (!error && newChat) {
+              setSelectedChatId(newChat.id);
+              setShowChatOnMobile(true);
+              // Перезагружаем чаты чтобы новый чат появился в списке
+              await loadChats();
+            }
+          }
+        } catch (error) {
+          console.error('Error creating/finding chat:', error);
+        }
+      })();
+    }
 
     const handleBeforeUnload = () => updateOnlineStatus(false);
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -369,6 +460,7 @@ export default function MessagesPage() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       userChatsSubscription?.unsubscribe();
       profilesSubscription?.unsubscribe();
+      dealsSubscription?.unsubscribe();
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [user]);
@@ -1451,7 +1543,7 @@ export default function MessagesPage() {
                                   <div className="flex items-center justify-between gap-2">
                                     <div className="flex items-center gap-2 flex-1 min-w-0">
                                       <Briefcase className="h-3 w-3 text-[#3F7F6E] flex-shrink-0" />
-                                      <span className="text-sm truncate">{dealTitle}</span>
+                                      <span className="text-sm truncate" data-wg-notranslate>{dealTitle}</span>
                                     </div>
                                     {dealUnread > 0 && (
                                       <div className="h-5 min-w-5 px-1.5 rounded-full bg-[#6FE7C8] text-white text-xs font-semibold flex items-center justify-center">
@@ -1629,9 +1721,10 @@ export default function MessagesPage() {
                           <div key={msg.id}>
                             <div className="flex justify-center my-4">
                               <div className="max-w-[80%] rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
-                                <div className="text-sm text-amber-900 text-center whitespace-pre-wrap break-words" data-wg-notranslate>
-                                  {msg.content || msg.text}
-                                </div>
+                                <SystemMessage
+                                  message={msg.text || msg.content}
+                                  className="text-sm text-amber-900 text-center whitespace-pre-wrap break-words"
+                                />
                                 <div className="text-xs text-amber-700 text-center mt-2">
                                   {formatTime(msg.created_at)}
                                 </div>
@@ -1685,10 +1778,10 @@ export default function MessagesPage() {
                                 </div>
                               </a>
                             )}
-                            {(msg.content || msg.text) && (
+                            {(msg.text || msg.content) && (
                               <div className="p-3">
                                 <div className="text-sm whitespace-pre-wrap break-words chat-message" data-wg-notranslate>
-                                  {translateChat ? (translatedMessages[msg.id] || msg.content || msg.text) : (msg.content || msg.text)}
+                                  {translateChat ? (translatedMessages[msg.id] || msg.text || msg.content) : (msg.text || msg.content)}
                                 </div>
                               </div>
                             )}
@@ -1759,8 +1852,6 @@ export default function MessagesPage() {
                     </div>
                   ) : (
                     <div className="flex flex-col gap-2">
-                      <ModerationAlert message={blockMessage} isVisible={isBlocked} />
-
                       <form onSubmit={handleSendMessage} className="flex gap-2">
                         <input
                           type="file"
@@ -1779,7 +1870,6 @@ export default function MessagesPage() {
                           onChange={(e) => {
                             setMessage(e.target.value);
                             setTranslatedInput('');
-                            checkContent(e.target.value);
                             if (e.target.value.trim()) sendTypingIndicator();
                             autosize();
                           }}
@@ -1808,7 +1898,7 @@ export default function MessagesPage() {
                           </Button>
                         )}
 
-                        <Button type="submit" disabled={(!message.trim() && !selectedFile) || uploading || isBlocked || translating}>
+                        <Button type="submit" disabled={(!message.trim() && !selectedFile) || uploading || translating}>
                           <Send className="h-4 w-4" />
                         </Button>
                       </form>
