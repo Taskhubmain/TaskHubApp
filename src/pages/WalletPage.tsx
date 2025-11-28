@@ -535,11 +535,18 @@ export default function WalletPage() {
           throw new Error('Отсутствуют данные для оплаты');
         }
 
+        console.log('[WalletPage] Initializing Payment Sheet with:', {
+          publishableKey: data.publishable_key.substring(0, 20) + '...',
+          hasClientSecret: !!data.client_secret
+        });
+
         try {
           const result = await StripePayment.initializePaymentSheet({
             publishableKey: data.publishable_key,
             clientSecret: data.client_secret
           });
+
+          console.log('[WalletPage] Payment Sheet result:', result);
 
           if (result.status === 'success') {
             setNotification({
@@ -561,9 +568,15 @@ export default function WalletPage() {
             });
             setTimeout(() => setNotification(null), 5000);
           }
-        } catch (paymentError) {
-          console.error('Payment sheet error:', paymentError);
-          throw new Error('Ошибка при обработке платежа');
+        } catch (paymentError: any) {
+          console.error('[WalletPage] Payment sheet error:', paymentError);
+          console.error('[WalletPage] Payment error details:', {
+            message: paymentError?.message,
+            code: paymentError?.code,
+            type: paymentError?.type,
+            full: JSON.stringify(paymentError)
+          });
+          throw new Error(`Ошибка при обработке платежа: ${paymentError?.message || paymentError}`);
         }
 
         setIsSubmittingDeposit(false);

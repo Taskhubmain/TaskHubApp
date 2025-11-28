@@ -23,10 +23,22 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    console.log('[create-payment-intent] Function called');
+
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
+    const stripePublishableKey = Deno.env.get("STRIPE_PUBLISHABLE_KEY");
+
     if (!stripeSecretKey) {
+      console.error('[create-payment-intent] STRIPE_SECRET_KEY is not configured');
       throw new Error("STRIPE_SECRET_KEY is not configured");
     }
+
+    if (!stripePublishableKey) {
+      console.error('[create-payment-intent] STRIPE_PUBLISHABLE_KEY is not configured');
+      throw new Error("STRIPE_PUBLISHABLE_KEY is not configured");
+    }
+
+    console.log('[create-payment-intent] Stripe keys configured');
 
     const stripe = new Stripe(stripeSecretKey, {
       apiVersion: "2023-10-16",
@@ -37,8 +49,11 @@ Deno.serve(async (req: Request) => {
 
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
+      console.error('[create-payment-intent] Missing authorization header');
       throw new Error("Missing authorization header");
     }
+
+    console.log('[create-payment-intent] Auth header present');
 
     const supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
       global: {
@@ -48,16 +63,23 @@ Deno.serve(async (req: Request) => {
 
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
     if (userError || !user) {
+      console.error('[create-payment-intent] User auth error:', userError);
       throw new Error("Unauthorized: " + (userError?.message || "No user found"));
     }
 
+    console.log('[create-payment-intent] User authenticated:', user.id);
+
     const { amount, currency = "USD", idempotency_key }: PaymentIntentRequest = await req.json();
 
+    console.log('[create-payment-intent] Request params:', { amount, currency, idempotency_key });
+
     if (!amount || amount <= 0) {
+      console.error('[create-payment-intent] Invalid amount:', amount);
       throw new Error("Invalid amount");
     }
 
     if (!idempotency_key) {
+      console.error('[create-payment-intent] Missing idempotency_key');
       throw new Error("Missing idempotency_key");
     }
 
@@ -148,6 +170,8 @@ Deno.serve(async (req: Request) => {
       transaction = newTransaction;
     }
 
+    console.log('[create-payment-intent] Creating payment intent');
+
     const paymentIntent = await stripe.paymentIntents.create(
       {
         amount: Math.round(amount * 100),
@@ -164,6 +188,8 @@ Deno.serve(async (req: Request) => {
       }
     );
 
+    console.log('[create-payment-intent] Payment intent created:', paymentIntent.id);
+
     await supabaseClient
       .from("transactions")
       .update({
@@ -172,12 +198,18 @@ Deno.serve(async (req: Request) => {
       })
       .eq("id", transaction.id);
 
+    console.log('[create-payment-intent] Transaction updated');
+
+    const response = {
+      client_secret: paymentIntent.client_secret,
+      payment_intent_id: paymentIntent.id,
+      publishable_key: stripePublishableKey,
+    };
+
+    console.log('[create-payment-intent] Returning response with publishable_key:', stripePublishableKey?.substring(0, 20) + '...');
+
     return new Response(
-      JSON.stringify({
-        client_secret: paymentIntent.client_secret,
-        payment_intent_id: paymentIntent.id,
-        publishable_key: Deno.env.get("STRIPE_PUBLISHABLE_KEY"),
-      }),
+      JSON.stringify(response),
       {
         status: 200,
         headers: {
