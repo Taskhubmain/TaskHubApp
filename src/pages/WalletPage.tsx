@@ -20,6 +20,8 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSupabase } from '@/lib/supabaseClient';
 import { useRegion } from '@/contexts/RegionContext';
+import { isNativeMobile } from '@/lib/platform';
+import StripePayment from '@/lib/stripe-plugin';
 
 const pageVariants = {
   initial: { opacity: 0, y: 16 },
@@ -499,31 +501,91 @@ export default function WalletPage() {
         return;
       }
 
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-wallet-topup-session`;
+      if (isNativeMobile()) {
+        const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-payment-intent`;
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          amount,
-          currency: profileCurrency,
-          idempotency_key: idempotencyKey
-        }),
-      });
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            amount,
+            currency: profileCurrency,
+            idempotency_key: idempotencyKey
+          }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Не удалось создать сессию оплаты');
-      }
+        if (!response.ok) {
+          throw new Error(data.error || 'Не удалось создать Payment Intent');
+        }
 
-      if (data.url) {
-        window.location.href = data.url;
+        if (!data.client_secret || !data.publishable_key) {
+          throw new Error('Отсутствуют данные для оплаты');
+        }
+
+        try {
+          const result = await StripePayment.initializePaymentSheet({
+            publishableKey: data.publishable_key,
+            clientSecret: data.client_secret
+          });
+
+          if (result.status === 'success') {
+            setNotification({
+              type: 'success',
+              title: 'Пополнение успешно',
+              message: 'Средства зачислены на баланс.'
+            });
+            setTimeout(() => setNotification(null), 5000);
+            setShowDepositModal(false);
+            setDepositAmount('');
+            await loadProfileBalance();
+            await loadWalletData();
+            await loadTransactions();
+          } else if (result.status === 'cancelled') {
+            setNotification({
+              type: 'info',
+              title: 'Платёж отменён',
+              message: 'Оплата не была завершена. С вашего счёта деньги не списаны.'
+            });
+            setTimeout(() => setNotification(null), 5000);
+          }
+        } catch (paymentError) {
+          console.error('Payment sheet error:', paymentError);
+          throw new Error('Ошибка при обработке платежа');
+        }
+
+        setIsSubmittingDeposit(false);
       } else {
-        throw new Error('URL для оплаты не получен');
+        const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-wallet-topup-session`;
+
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            amount,
+            currency: profileCurrency,
+            idempotency_key: idempotencyKey
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Не удалось создать сессию оплаты');
+        }
+
+        if (data.url) {
+          window.location.href = data.url;
+        } else {
+          throw new Error('URL для оплаты не получен');
+        }
       }
     } catch (error) {
       console.error('Error creating deposit:', error);
