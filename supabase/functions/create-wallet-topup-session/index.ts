@@ -128,6 +128,17 @@ Deno.serve(async (req: Request) => {
       transaction = newTransaction;
     }
 
+    const userAgent = req.headers.get("User-Agent") || "";
+    const isAndroidApp = userAgent.includes("Android") && userAgent.includes("wv");
+
+    const successUrl = isAndroidApp
+      ? `taskhub://wallet?deposit=success`
+      : `${frontendUrl}/#/wallet?deposit=success`;
+
+    const cancelUrl = isAndroidApp
+      ? `taskhub://wallet?deposit=cancelled`
+      : `${frontendUrl}/#/wallet?deposit=cancelled`;
+
     const session = await stripe.checkout.sessions.create(
       {
         mode: "payment",
@@ -145,8 +156,8 @@ Deno.serve(async (req: Request) => {
             quantity: 1,
           },
         ],
-        success_url: `${frontendUrl}/#/wallet?deposit=success`,
-        cancel_url: `${frontendUrl}/#/wallet?deposit=cancelled`,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
         metadata: {
           user_id: user.id,
           wallet_id: wallet.id,

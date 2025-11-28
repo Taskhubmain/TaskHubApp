@@ -20,8 +20,6 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSupabase } from '@/lib/supabaseClient';
 import { useRegion } from '@/contexts/RegionContext';
-import { isNativeMobile } from '@/lib/platform';
-import StripePayment from '@/lib/stripe-plugin';
 
 const pageVariants = {
   initial: { opacity: 0, y: 16 },
@@ -92,11 +90,6 @@ export default function WalletPage() {
 
   useEffect(() => {
     if (user) {
-      console.log('[WalletPage] Initial platform check on mount:', {
-        isNative: isNativeMobile(),
-        userAgent: navigator.userAgent
-      });
-
       const init = async () => {
         await cleanupExpiredDeposits();
         await loadProfileBalance();
@@ -506,107 +499,31 @@ export default function WalletPage() {
         return;
       }
 
-      const isMobile = isNativeMobile();
-      console.log('[WalletPage] Platform check:', { isMobile, platform: window.location.href });
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-wallet-topup-session`;
 
-      if (isMobile) {
-        const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-payment-intent`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          amount,
+          currency: profileCurrency,
+          idempotency_key: idempotencyKey
+        }),
+      });
 
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            amount,
-            currency: profileCurrency,
-            idempotency_key: idempotencyKey
-          }),
-        });
+      const data = await response.json();
 
-        const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Не удалось создать сессию оплаты');
+      }
 
-        if (!response.ok) {
-          throw new Error(data.error || 'Не удалось создать Payment Intent');
-        }
-
-        if (!data.client_secret || !data.publishable_key) {
-          throw new Error('Отсутствуют данные для оплаты');
-        }
-
-        console.log('[WalletPage] Initializing Payment Sheet with:', {
-          publishableKey: data.publishable_key.substring(0, 20) + '...',
-          hasClientSecret: !!data.client_secret
-        });
-
-        try {
-          const result = await StripePayment.initializePaymentSheet({
-            publishableKey: data.publishable_key,
-            clientSecret: data.client_secret
-          });
-
-          console.log('[WalletPage] Payment Sheet result:', result);
-
-          if (result.status === 'success') {
-            setNotification({
-              type: 'success',
-              title: 'Пополнение успешно',
-              message: 'Средства зачислены на баланс.'
-            });
-            setTimeout(() => setNotification(null), 5000);
-            setShowDepositModal(false);
-            setDepositAmount('');
-            await loadProfileBalance();
-            await loadWalletData();
-            await loadTransactions();
-          } else if (result.status === 'cancelled') {
-            setNotification({
-              type: 'info',
-              title: 'Платёж отменён',
-              message: 'Оплата не была завершена. С вашего счёта деньги не списаны.'
-            });
-            setTimeout(() => setNotification(null), 5000);
-          }
-        } catch (paymentError: any) {
-          console.error('[WalletPage] Payment sheet error:', paymentError);
-          console.error('[WalletPage] Payment error details:', {
-            message: paymentError?.message,
-            code: paymentError?.code,
-            type: paymentError?.type,
-            full: JSON.stringify(paymentError)
-          });
-          throw new Error(`Ошибка при обработке платежа: ${paymentError?.message || paymentError}`);
-        }
-
-        setIsSubmittingDeposit(false);
+      if (data.url) {
+        window.location.href = data.url;
       } else {
-        const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-wallet-topup-session`;
-
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            amount,
-            currency: profileCurrency,
-            idempotency_key: idempotencyKey
-          }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error || 'Не удалось создать сессию оплаты');
-        }
-
-        if (data.url) {
-          window.location.href = data.url;
-        } else {
-          throw new Error('URL для оплаты не получен');
-        }
+        throw new Error('URL для оплаты не получен');
       }
     } catch (error) {
       console.error('Error creating deposit:', error);

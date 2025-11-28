@@ -27,6 +27,14 @@
                 <data android:scheme="com.taskhub.app" android:host="oauth-callback" />
             </intent-filter>
 
+            <!-- Deep links for payment redirects -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="taskhub" />
+            </intent-filter>
+
             <!-- Deep links https -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

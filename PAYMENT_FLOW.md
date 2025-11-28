@@ -1,0 +1,265 @@
+# Payment Flow - Оплата через сайт с редиректами
+
+## Обзор
+
+Все платежи (пополнение и вывод) теперь проходят через сайт Stripe Checkout с автоматическими редиректами обратно в приложение.
+
+## Архитектура
+
+### 1. Пополнение баланса (Deposit)
+
+```
+Приложение → Stripe Checkout (в браузере) → Redirect обратно в приложение
+```
+
+#### Шаги:
+
+1. **Пользователь нажимает "Пополнить"** в WalletPage
+2. **Приложение создаёт Stripe Checkout Session** через edge function `create-wallet-topup-session`
+3. **Открывается браузер** с формой оплаты Stripe
+4. **Пользователь вводит карту** и завершает оплату
+5. **Stripe редиректит** на success/cancel URL
+6. **Приложение открывается** через deep link `taskhub://wallet?deposit=success`
+7. **WalletPage показывает результат** и обновляет баланс
+
+### 2. Вывод средств (Withdrawal)
+
+```
+Приложение → Stripe Connect Transfer → Успех/Ошибка
+```
+
+Вывод средств работает напрямую через Stripe Connect, без браузера.
+
+## Deep Links
+
+### Android
+
+В `AndroidManifest.xml` настроен обработчик для схемы `taskhub://`:
+
+```xml
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="taskhub" />
+</intent-filter>
+```
+
+### Обработчик в приложении
+
+Файл: `src/hooks/useAppUrlHandler.ts`
+
+```typescript
+// Обработка payment deep links (taskhub://wallet?deposit=success)
+else if (url.protocol === 'taskhub:') {
+  const path = url.hostname + url.pathname;
+  const search = url.search;
+  navigate(`/${path}${search}`);
+}
+```
+
+## Edge Function: create-wallet-topup-session
+
+Файл: `supabase/functions/create-wallet-topup-session/index.ts`
+
+### Определение платформы
+
+```typescript
+const userAgent = req.headers.get("User-Agent") || "";
+const isAndroidApp = userAgent.includes("Android") && userAgent.includes("wv");
+```
+
+### URL'ы для редиректа
+
+```typescript
+const successUrl = isAndroidApp
+  ? `taskhub://wallet?deposit=success`
+  : `${frontendUrl}/#/wallet?deposit=success`;
+
+const cancelUrl = isAndroidApp
+  ? `taskhub://wallet?deposit=cancelled`
+  : `${frontendUrl}/#/wallet?deposit=cancelled`;
+```
+
+**Для Android приложения:**
+- Success: `taskhub://wallet?deposit=success`
+- Cancel: `taskhub://wallet?deposit=cancelled`
+
+**Для веб-версии:**
+- Success: `https://your-domain.com/#/wallet?deposit=success`
+- Cancel: `https://your-domain.com/#/wallet?deposit=cancelled`
+
+## WalletPage - обработка результатов
+
+Файл: `src/pages/WalletPage.tsx`
+
+### useEffect обработчик
+
+```typescript
+const urlParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
+const depositStatus = urlParams.get('deposit');
+
+if (depositStatus === 'success') {
+  setNotification({
+    type: 'success',
+    title: 'Пополнение успешно',
+    message: 'Средства зачислены на баланс.'
+  });
+  loadProfileBalance();
+  loadWalletData();
+  loadTransactions();
+  window.history.replaceState({}, '', '#/wallet');
+} else if (depositStatus === 'cancelled') {
+  setNotification({
+    type: 'info',
+    title: 'Платёж отменён',
+    message: 'Оплата не была завершена.'
+  });
+  window.history.replaceState({}, '', '#/wallet');
+}
+```
+
+## Flow диаграмма
+
+### Успешная оплата
+
+```
+1. User clicks "Пополнить" (10 USD)
+   ↓
+2. App calls edge function create-wallet-topup-session
+   ↓
+3. Edge function creates Stripe Checkout Session
+   - success_url: taskhub://wallet?deposit=success
+   - cancel_url: taskhub://wallet?deposit=cancelled
+   ↓
+4. App opens browser with Stripe Checkout URL
+   ↓
+5. User enters card 4242 4242 4242 4242
+   ↓
+6. Stripe processes payment
+   ↓
+7. Stripe redirects to: taskhub://wallet?deposit=success
+   ↓
+8. Android opens app via deep link
+   ↓
+9. useAppUrlHandler catches URL and navigates to /wallet?deposit=success
+   ↓
+10. WalletPage shows success notification
+    - Reloads balance
+    - Reloads transactions
+    - Clears URL params
+```
+
+### Отменённая оплата
+
+```
+1-4. Same as success
+   ↓
+5. User clicks "Back" or "Cancel"
+   ↓
+6. Stripe redirects to: taskhub://wallet?deposit=cancelled
+   ↓
+7-8. Same as success
+   ↓
+9. WalletPage shows "Платёж отменён"
+   - No balance changes
+   - Clears URL params
+```
+
+## Тестирование
+
+### 1. Тестовые карты Stripe
+
+**Успешная оплата:**
+- Карта: `4242 4242 4242 4242`
+- Срок: любая будущая дата
+- CVC: любые 3 цифры
+- ZIP: любой
+
+**Отклонённая карта:**
+- Карта: `4000 0000 0000 0002`
+
+### 2. Проверка deep links
+
+```bash
+# Проверить, что приложение принимает deep links:
+adb shell am start -W -a android.intent.action.VIEW -d "taskhub://wallet?deposit=success" com.taskhub.app
+```
+
+### 3. Логи для отладки
+
+**В Logcat (Android):**
+```
+App URL handler: taskhub://wallet?deposit=success
+Navigating to: /wallet?deposit=success
+```
+
+**В Chrome DevTools:**
+```
+[WalletPage] Deposit status: success
+Loading profile balance...
+Loading wallet data...
+Loading transactions...
+```
+
+## Важные моменты
+
+### ✅ Что изменилось
+
+1. **Удалён нативный Payment Sheet** - больше не используется
+2. **Удалены зависимости:**
+   - `stripe-plugin.ts` больше не импортируется
+   - `isNativeMobile()` не используется в WalletPage
+3. **Всегда редирект в браузер** - независимо от платформы
+4. **Deep links** настроены для возврата в приложение
+
+### ⚠️ Требования
+
+1. **Deep link должен быть зарегистрирован** в AndroidManifest.xml
+2. **Edge function должна определять платформу** через User-Agent
+3. **WalletPage должен обрабатывать** URL параметры `?deposit=success/cancelled`
+
+### 🔧 Отладка
+
+Если deep link не работает:
+
+1. **Проверьте AndroidManifest.xml:**
+   ```bash
+   grep -A 5 "taskhub" android/app/src/main/AndroidManifest.xml
+   ```
+
+2. **Проверьте useAppUrlHandler:**
+   ```bash
+   grep -A 10 "taskhub:" src/hooks/useAppUrlHandler.ts
+   ```
+
+3. **Проверьте логи:**
+   ```bash
+   adb logcat | grep -i "appUrlOpen\|taskhub"
+   ```
+
+4. **Тест вручную:**
+   ```bash
+   adb shell am start -W -a android.intent.action.VIEW \
+     -d "taskhub://wallet?deposit=success" com.taskhub.app
+   ```
+
+## Преимущества
+
+1. **Проще поддержка** - нет нативного кода для Payment Sheet
+2. **Одинаковый UX** - веб и мобайл используют одну форму Stripe
+3. **Надёжнее** - Stripe Checkout полностью управляется Stripe
+4. **PCI compliance** - карточные данные не проходят через приложение
+5. **Меньше багов** - нет проблем с регистрацией плагинов
+
+## Недостатки
+
+1. **Выход из приложения** - пользователь видит браузер
+2. **Дольше** - открытие браузера + редирект занимает ~2-3 секунды
+3. **Требуется интернет** - без сети deep link может не сработать
+
+## Будущие улучшения
+
+1. **Custom Tabs (Android)** - показывать Stripe Checkout в overlay вместо полного браузера
+2. **Прогресс индикатор** - показывать loading пока открывается браузер
+3. **Кэширование** - сохранять последний статус оплаты локально
