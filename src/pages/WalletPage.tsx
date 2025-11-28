@@ -92,6 +92,11 @@ export default function WalletPage() {
 
   useEffect(() => {
     if (user) {
+      console.log('[WalletPage] Initial platform check on mount:', {
+        isNative: isNativeMobile(),
+        userAgent: navigator.userAgent
+      });
+
       const init = async () => {
         await cleanupExpiredDeposits();
         await loadProfileBalance();
@@ -501,7 +506,10 @@ export default function WalletPage() {
         return;
       }
 
-      if (isNativeMobile()) {
+      const isMobile = isNativeMobile();
+      console.log('[WalletPage] Platform check:', { isMobile, platform: window.location.href });
+
+      if (isMobile) {
         const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-payment-intent`;
 
         const response = await fetch(apiUrl, {

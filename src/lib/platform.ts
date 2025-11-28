@@ -1,7 +1,14 @@
 import { Capacitor } from '@capacitor/core';
 
 export function isNativeMobile(): boolean {
-  return Capacitor.isNativePlatform();
+  const isNative = Capacitor.isNativePlatform();
+  const platform = Capacitor.getPlatform();
+  console.log('[Platform] isNativeMobile check:', {
+    isNative,
+    platform,
+    userAgent: navigator.userAgent
+  });
+  return isNative;
 }
 
 export function getPlatform(): 'web' | 'android' | 'ios' {
