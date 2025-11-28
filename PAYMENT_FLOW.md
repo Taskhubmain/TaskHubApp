@@ -1,26 +1,26 @@
-# Payment Flow - Оплата через сайт с редиректом на веб-страницу
+# Payment Flow - Оплата через сайт с редиректами
 
 ## Обзор
 
-Все платежи (пополнение и вывод) проходят через сайт Stripe Checkout с редиректом на веб-страницу кошелька.
+Все платежи (пополнение и вывод) теперь проходят через сайт Stripe Checkout с автоматическими редиректами обратно в приложение.
 
 ## Архитектура
 
 ### 1. Пополнение баланса (Deposit)
 
 ```
-Приложение → Stripe Checkout (в браузере) → Redirect на веб-страницу кошелька
+Приложение → Stripe Checkout (в браузере) → Redirect обратно в приложение
 ```
 
 #### Шаги:
 
-1. **Пользователь нажимает "Пополнить"** в WalletPage (приложение или веб)
-2. **Создаётся Stripe Checkout Session** через edge function `create-wallet-topup-session`
+1. **Пользователь нажимает "Пополнить"** в WalletPage
+2. **Приложение создаёт Stripe Checkout Session** через edge function `create-wallet-topup-session`
 3. **Открывается браузер** с формой оплаты Stripe
 4. **Пользователь вводит карту** и завершает оплату
-5. **Stripe редиректит** на веб-страницу: `https://your-domain.com/#/wallet?deposit=success`
-6. **Пользователь видит страницу кошелька** с результатом оплаты
-7. **WalletPage показывает уведомление** и обновляет баланс
+5. **Stripe редиректит** на success/cancel URL
+6. **Приложение открывается** через deep link `taskhub://wallet?deposit=success`
+7. **WalletPage показывает результат** и обновляет баланс
 
 ### 2. Вывод средств (Withdrawal)
 
@@ -30,18 +30,62 @@
 
 Вывод средств работает напрямую через Stripe Connect, без браузера.
 
+## Deep Links
+
+### Android
+
+В `AndroidManifest.xml` настроен обработчик для схемы `taskhub://`:
+
+```xml
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="taskhub" />
+</intent-filter>
+```
+
+### Обработчик в приложении
+
+Файл: `src/hooks/useAppUrlHandler.ts`
+
+```typescript
+// Обработка payment deep links (taskhub://wallet?deposit=success)
+else if (url.protocol === 'taskhub:') {
+  const path = url.hostname + url.pathname;
+  const search = url.search;
+  navigate(`/${path}${search}`);
+}
+```
+
 ## Edge Function: create-wallet-topup-session
 
 Файл: `supabase/functions/create-wallet-topup-session/index.ts`
 
+### Определение платформы
+
+```typescript
+const userAgent = req.headers.get("User-Agent") || "";
+const isAndroidApp = userAgent.includes("Android") && userAgent.includes("wv");
+```
+
 ### URL'ы для редиректа
 
 ```typescript
-const successUrl = `${frontendUrl}/#/wallet?deposit=success`;
-const cancelUrl = `${frontendUrl}/#/wallet?deposit=cancelled`;
+const successUrl = isAndroidApp
+  ? `taskhub://wallet?deposit=success`
+  : `${frontendUrl}/#/wallet?deposit=success`;
+
+const cancelUrl = isAndroidApp
+  ? `taskhub://wallet?deposit=cancelled`
+  : `${frontendUrl}/#/wallet?deposit=cancelled`;
 ```
 
-**Всегда редирект на веб-страницу:**
+**Для Android приложения:**
+- Success: `taskhub://wallet?deposit=success`
+- Cancel: `taskhub://wallet?deposit=cancelled`
+
+**Для веб-версии:**
 - Success: `https://your-domain.com/#/wallet?deposit=success`
 - Cancel: `https://your-domain.com/#/wallet?deposit=cancelled`
 
@@ -82,23 +126,25 @@ if (depositStatus === 'success') {
 ```
 1. User clicks "Пополнить" (10 USD)
    ↓
-2. App/Web calls edge function create-wallet-topup-session
+2. App calls edge function create-wallet-topup-session
    ↓
 3. Edge function creates Stripe Checkout Session
-   - success_url: https://your-domain.com/#/wallet?deposit=success
-   - cancel_url: https://your-domain.com/#/wallet?deposit=cancelled
+   - success_url: taskhub://wallet?deposit=success
+   - cancel_url: taskhub://wallet?deposit=cancelled
    ↓
-4. Opens browser with Stripe Checkout URL
+4. App opens browser with Stripe Checkout URL
    ↓
 5. User enters card 4242 4242 4242 4242
    ↓
 6. Stripe processes payment
    ↓
-7. Stripe redirects to: https://your-domain.com/#/wallet?deposit=success
+7. Stripe redirects to: taskhub://wallet?deposit=success
    ↓
-8. User sees wallet page in browser
+8. Android opens app via deep link
    ↓
-9. WalletPage shows success notification
+9. useAppUrlHandler catches URL and navigates to /wallet?deposit=success
+   ↓
+10. WalletPage shows success notification
     - Reloads balance
     - Reloads transactions
     - Clears URL params
@@ -111,11 +157,11 @@ if (depositStatus === 'success') {
    ↓
 5. User clicks "Back" or "Cancel"
    ↓
-6. Stripe redirects to: https://your-domain.com/#/wallet?deposit=cancelled
+6. Stripe redirects to: taskhub://wallet?deposit=cancelled
    ↓
-7. User sees wallet page in browser
+7-8. Same as success
    ↓
-8. WalletPage shows "Платёж отменён"
+9. WalletPage shows "Платёж отменён"
    - No balance changes
    - Clears URL params
 ```

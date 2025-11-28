@@ -17,6 +17,12 @@ export function useAppUrlHandler() {
           const state = params.get('state');
           navigate(`/oauth-callback?code=${code ?? ''}${state ? `&state=${state}` : ''}`);
         }
+        // Обработка payment deep links (taskhub://wallet?deposit=success)
+        else if (url.protocol === 'taskhub:') {
+          const path = url.hostname + url.pathname;
+          const search = url.search;
+          navigate(`/${path}${search}`);
+        }
         // Обработка обычных deep links
         else {
           const path = url.pathname + url.search + url.hash;
